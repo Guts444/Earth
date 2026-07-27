@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Earth Orbit — Live Satellite Tracker</title>
+    <meta
+      name="description"
+      content="Real-time 3D visualization of active satellites using CelesTrak TLEs and SGP4 propagation in the browser."
+    />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="c"></canvas>
+
+      <div id="hud" class="hud">
+        <header class="brand">
+          <div class="brand-mark"></div>
+          <div>
+            <h1>Earth Orbit</h1>
+            <p class="tagline">CelesTrak TLE · SGP4 · real-time local propagation</p>
+          </div>
+        </header>
+
+        <section class="panel">
+          <h2>Catalog</h2>
+          <div id="group-list" class="group-list"></div>
+          <button id="reload-btn" class="btn primary" type="button">Load selected groups</button>
+          <p id="load-status" class="status">Ready</p>
+        </section>
+
+        <section class="panel">
+          <h2>Display</h2>
+          <label class="row">
+            <span>Satellite size</span>
+            <input id="size-slider" type="range" min="0.15" max="1.5" step="0.05" value="0.45" />
+          </label>
+          <label class="row check">
+            <input id="toggle-orbits" type="checkbox" />
+            <span>Show orbit for selection</span>
+          </label>
+          <label class="row check">
+            <input id="toggle-footprint" type="checkbox" checked />
+            <span>Ground footprint (selection)</span>
+          </label>
+          <label class="row check">
+            <input id="toggle-earth-rotate" type="checkbox" />
+            <span>Auto-rotate camera</span>
+          </label>
+          <label class="row check">
+            <input id="toggle-labels" type="checkbox" checked />
+            <span>Highlight ISS / stations</span>
+          </label>
+        </section>
+
+        <section class="panel">
+          <h2>Time</h2>
+          <label class="row">
+            <span>Speed</span>
+            <input id="speed-slider" type="range" min="0" max="120" step="1" value="1" />
+            <span id="speed-label" class="mono">1×</span>
+          </label>
+          <div class="btn-row">
+            <button id="now-btn" class="btn" type="button">Now</button>
+            <button id="pause-btn" class="btn" type="button">Pause</button>
+          </div>
+          <p id="sim-time" class="mono time">—</p>
+        </section>
+
+        <section class="panel" id="selection-panel">
+          <h2>Selection</h2>
+          <p id="selection-empty" class="muted">Click a satellite to inspect it.</p>
+          <div id="selection-body" class="selection hidden">
+            <p id="sel-name" class="sel-name">—</p>
+            <dl class="kv">
+              <div><dt>NORAD</dt><dd id="sel-id">—</dd></div>
+              <div><dt>Group</dt><dd id="sel-group">—</dd></div>
+              <div><dt>Lat</dt><dd id="sel-lat">—</dd></div>
+              <div><dt>Lon</dt><dd id="sel-lon">—</dd></div>
+              <div><dt>Alt</dt><dd id="sel-alt">—</dd></div>
+              <div><dt>Vel</dt><dd id="sel-vel">—</dd></div>
+            </dl>
+          </div>
+        </section>
+
+        <footer class="footer">
+          <span id="stats" class="mono">0 sats · 0 fps</span>
+          <span class="muted">TLE cache ~2h · physics in-browser</span>
+        </footer>
+      </div>
+
+      <div id="tooltip" class="tooltip hidden"></div>
+      <div id="loading" class="loading">
+        <div class="spinner"></div>
+        <p>Fetching orbital elements…</p>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
