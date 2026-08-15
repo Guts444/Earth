@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { EARTH_RADIUS } from '../config';
 
-const CLOUDS_TEXTURE = '/textures/earth-clouds.png';
+// Relative path so the cloud layer resolves under any deploy base.
+const CLOUDS_TEXTURE = 'textures/earth-clouds.png';
 
 const cloudsVertex = /* glsl */ `
   varying vec2 vUv;

@@ -2,9 +2,11 @@ import * as THREE from 'three';
 import { ATMOSPHERE_SCALE, EARTH_RADIUS } from '../config';
 import { createClouds, type CloudSystem } from './clouds';
 
-const EARTH_DAY = '/textures/earth-blue-marble.jpg';
-const EARTH_NIGHT = '/textures/earth-night.jpg';
-const EARTH_SPEC = '/textures/earth-water.png';
+// Relative paths (not root-absolute) so textures resolve under any deploy
+// base — dev server, /Earth/ on GitHub Pages, or file://.
+const EARTH_DAY = 'textures/earth-blue-marble.jpg';
+const EARTH_NIGHT = 'textures/earth-night.jpg';
+const EARTH_SPEC = 'textures/earth-water.png';
 
 const atmosphereVertex = /* glsl */ `
   varying vec3 vNormal;
