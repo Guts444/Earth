@@ -94,7 +94,9 @@ Open `http://localhost:5173/` in your browser.
 
 ## 🌍 Live Deployment
 
-The app deploys to **GitHub Pages** automatically via `.github/workflows/deploy.yml` (push to `main`). Live feeds with CORS-open upstreams (CelesTrak, USGS) fall back to direct fetches on static hosting; OpenSky (rate-limited, no CORS) and NHC (no CORS) degrade to their simulated/curated fallbacks.
+The app deploys to **GitHub Pages** automatically via `.github/workflows/deploy.yml` (push to `main`). Live feeds with CORS-open upstreams (CelesTrak, USGS, SWPC, Launch Library 2) fall back to direct fetches on static hosting; OpenSky (rate-limited, no CORS) and NHC (no CORS) degrade to their simulated/curated fallbacks.
+
+Satellite TLEs are refreshed **every 6 hours** by `.github/workflows/update-tles.yml` — a cron job that runs on GitHub's servers (no local machine needed) and force-pushes all 12 catalog groups to the orphan `tle-data` branch, which the site fetches from `raw.githubusercontent.com`. CelesTrak is the primary source, with the GitHub-hosted changshuospace mirror as fallback for throttled groups.
 
 1. Make sure the repository is **public** (GitHub Pages is not available for private repos on the free plan).
 2. Repo Settings → Pages → **Source: GitHub Actions**.

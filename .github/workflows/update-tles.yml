@@ -50,6 +50,15 @@ jobs:
           fetch_group oneweb oneweb
           fetch_group stations stations
           fetch_group gps-ops gps
+          fetch_group galileo galileo
+          fetch_group glo-ops glonass
+          fetch_group beidou beidou
+          fetch_group iridium-NEXT iridium
+          # No mirror coverage — CelesTrak direct only, keep-previous on fail
+          fetch_group weather ""
+          fetch_group science ""
+          fetch_group visual ""
+          fetch_group active ""
           # Drop files that failed so we never serve stale-as-missing
           find tle-data -name '*.tle' -size 0 -delete
 
