@@ -4,7 +4,6 @@ import {
 } from 'satellite.js';
 import {
   CELESTRAK_BASE,
-  GROUP_BY_ID,
   TLE_CACHE_TTL_MS,
   type SatGroupId,
 } from '../config';
@@ -120,14 +119,19 @@ export async function loadCatalog(
 ): Promise<CatalogSatellite[]> {
   if (groupIds.length === 0) return [];
 
-  const byNorad = new Map<string, CatalogSatellite>();
+  onProgress?.(`Fetching ${groupIds.length} orbital groups…`);
 
-  for (const groupId of groupIds) {
-    const label = GROUP_BY_ID[groupId]?.label ?? groupId;
-    onProgress?.(`Fetching ${label}…`);
-    const text = await fetchGroupTle(groupId);
-    onProgress?.(`Parsing ${label}…`);
-    const sats = parseTleText(text, groupId);
+  // Fetch + parse all groups in parallel — cold loads were serial (60-100s),
+  // and the NORAD de-dup below makes ordering irrelevant.
+  const results = await Promise.all(
+    groupIds.map(async (groupId) => {
+      const text = await fetchGroupTle(groupId);
+      return parseTleText(text, groupId);
+    }),
+  );
+
+  const byNorad = new Map<string, CatalogSatellite>();
+  for (const sats of results) {
     for (const sat of sats) {
       if (!byNorad.has(sat.noradId)) {
         byNorad.set(sat.noradId, sat);
