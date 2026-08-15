@@ -13,6 +13,12 @@ dist-ssr
 .cache
 *.local
 
+# Local dev junk
+.temp-chrome-profile/
+test-browser.js
+/test_shot.png
+/screenshot_test.png
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

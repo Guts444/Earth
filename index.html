@@ -4,98 +4,333 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Earth Orbit — Live Satellite Tracker</title>
+    <title>Earth Command — Planetary Live Operations Center</title>
     <meta
       name="description"
-      content="Real-time 3D visualization of active satellites using CelesTrak TLEs and SGP4 propagation in the browser."
+      content="Real-time 3D Planetary Command Center tracking active satellites, live global aircraft ADS-B, maritime vessel traffic, and USGS earthquakes."
     />
+    <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
     <div id="app">
       <canvas id="c"></canvas>
 
-      <div id="hud" class="hud">
-        <header class="brand">
-          <div class="brand-mark"></div>
-          <div>
-            <h1>Earth Orbit</h1>
-            <p class="tagline">CelesTrak TLE · SGP4 · real-time local propagation</p>
-          </div>
-        </header>
-
-        <section class="panel">
-          <h2>Catalog</h2>
-          <div id="group-list" class="group-list"></div>
-          <button id="reload-btn" class="btn primary" type="button">Load selected groups</button>
-          <p id="load-status" class="status">Ready</p>
-        </section>
-
-        <section class="panel">
-          <h2>Display</h2>
-          <label class="row">
-            <span>Satellite size</span>
-            <input id="size-slider" type="range" min="0.15" max="1.5" step="0.05" value="0.45" />
-          </label>
-          <label class="row check">
-            <input id="toggle-orbits" type="checkbox" />
-            <span>Show orbit for selection</span>
-          </label>
-          <label class="row check">
-            <input id="toggle-footprint" type="checkbox" checked />
-            <span>Ground footprint (selection)</span>
-          </label>
-          <label class="row check">
-            <input id="toggle-earth-rotate" type="checkbox" />
-            <span>Auto-rotate camera</span>
-          </label>
-          <label class="row check">
-            <input id="toggle-labels" type="checkbox" checked />
-            <span>Highlight ISS / stations</span>
-          </label>
-        </section>
-
-        <section class="panel">
-          <h2>Time</h2>
-          <label class="row">
-            <span>Speed</span>
-            <input id="speed-slider" type="range" min="0" max="120" step="1" value="1" />
-            <span id="speed-label" class="mono">1×</span>
-          </label>
-          <div class="btn-row">
-            <button id="now-btn" class="btn" type="button">Now</button>
-            <button id="pause-btn" class="btn" type="button">Pause</button>
-          </div>
-          <p id="sim-time" class="mono time">—</p>
-        </section>
-
-        <section class="panel" id="selection-panel">
-          <h2>Selection</h2>
-          <p id="selection-empty" class="muted">Click a satellite to inspect it.</p>
-          <div id="selection-body" class="selection hidden">
-            <p id="sel-name" class="sel-name">—</p>
-            <dl class="kv">
-              <div><dt>NORAD</dt><dd id="sel-id">—</dd></div>
-              <div><dt>Group</dt><dd id="sel-group">—</dd></div>
-              <div><dt>Lat</dt><dd id="sel-lat">—</dd></div>
-              <div><dt>Lon</dt><dd id="sel-lon">—</dd></div>
-              <div><dt>Alt</dt><dd id="sel-alt">—</dd></div>
-              <div><dt>Vel</dt><dd id="sel-vel">—</dd></div>
-            </dl>
-          </div>
-        </section>
-
-        <footer class="footer">
-          <span id="stats" class="mono">0 sats · 0 fps</span>
-          <span class="muted">TLE cache ~2h · physics in-browser</span>
-        </footer>
+      <!-- 3D Tactical Screen Reticle -->
+      <div id="target-reticle" class="target-reticle hidden">
+        <div class="reticle-box">
+          <span class="corner tl"></span>
+          <span class="corner tr"></span>
+          <span class="corner bl"></span>
+          <span class="corner br"></span>
+          <div class="reticle-cross"></div>
+        </div>
+        <div class="reticle-tag">
+          <span class="reticle-label">TARGET LOCK</span>
+          <span class="reticle-dist">TRACKING</span>
+        </div>
       </div>
 
+      <!-- Top Master Command Bar -->
+      <header id="top-bar" class="top-bar">
+        <div class="top-left">
+          <div class="command-mark">
+            <div class="pulse-ring"></div>
+            <div class="core-dot"></div>
+          </div>
+          <div class="brand-text">
+            <h1>EARTH COMMAND</h1>
+            <p class="brand-sub">PLANETARY MULTI-DOMAIN SURVEILLANCE & TELEMETRY</p>
+          </div>
+        </div>        <div class="top-counters">
+          <div class="counter-badge" title="Orbital Satellites Monitored">
+            <span class="counter-icon">🛰️</span>
+            <span class="counter-label">ORBITAL</span>
+            <span id="count-sats" class="counter-val mono">—</span>
+          </div>
+          <div class="counter-badge" title="Live ADS-B Aircraft in Flight">
+            <span class="counter-icon">✈️</span>
+            <span class="counter-label">AVIATION</span>
+            <span id="count-flights" class="counter-val mono">—</span>
+          </div>
+          <div class="counter-badge" title="Active Maritime Vessels">
+            <span class="counter-icon">🚢</span>
+            <span class="counter-label">MARITIME</span>
+            <span id="count-marine" class="counter-val mono">—</span>
+          </div>
+          <div class="counter-badge" title="Active Geosphere Hazards">
+            <span class="counter-icon">🌋</span>
+            <span class="counter-label">HAZARDS</span>
+            <span id="count-quakes" class="counter-val mono">—</span>
+          </div>
+          <div class="counter-badge space-weather-badge" title="NOAA Space Weather Status">
+            <span class="counter-icon">⚡</span>
+            <span class="counter-label">SPACE WX</span>
+            <span id="space-weather-val" class="counter-val mono">Kp 3.3 (G1)</span>
+          </div>
+        </div>
+
+        <div class="top-right">
+          <div class="status-indicator">
+            <span class="status-dot live"></span>
+            <span class="status-text mono">LIVE FEED</span>
+          </div>
+          <div id="zulu-clock" class="zulu-clock mono">2026-08-15 00:00:00 UTC</div>
+          <select id="theme-select" class="theme-select" aria-label="HUD Theme">
+            <option value="cyber-blue">Theme: Cyber Blue</option>
+            <option value="tactical-amber">Theme: Tactical Amber</option>
+            <option value="emerald-radar">Theme: Emerald Radar</option>
+            <option value="stealth">Theme: Stealth</option>
+          </select>
+        </div>
+      </header>
+
+      <!-- Global Search Floating Bar -->
+      <div class="search-container">
+        <div class="search-box">
+          <span class="search-lens">🔍</span>
+          <input
+            id="global-search"
+            type="text"
+            placeholder="Search satellites, flights, ships, cables, DSN probes, volcanoes, asteroids, spaceports..."
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+        <div id="search-results" class="search-results hidden"></div>
+      </div>
+
+      <!-- Left Operations Panel -->
+      <aside id="left-panel" class="hud-panel left-panel">
+        <nav class="domain-tabs">
+          <button class="tab-btn active" data-tab="orbital" title="Orbital Satellites">🛰️ Sats</button>
+          <button class="tab-btn" data-tab="aviation" title="Global Aircraft">✈️ Air</button>
+          <button class="tab-btn" data-tab="maritime" title="Maritime Traffic">🚢 Sea</button>
+          <button class="tab-btn" data-tab="hazards" title="Geosphere Hazards & Climate">🌋 Hazards</button>
+          <button class="tab-btn" data-tab="spaceops" title="Deep Space & Space Weather">🌌 Space</button>
+          <button class="tab-btn" data-tab="infra" title="Planetary Infrastructure">⚡ Infra</button>
+          <button class="tab-btn" data-tab="overlays" title="Tactical Overlays">🌐 Layers</button>
+          <button class="tab-btn" data-tab="hotspots" title="Tactical Hotspots">🎯 Hotspots</button>
+        </nav>
+
+        <div class="tab-contents">
+          <!-- Orbital Tab -->
+          <div class="tab-content active" data-tab="orbital">
+            <h3>Orbital Catalog Groups</h3>
+            <div id="sat-group-list" class="checklist-group"></div>
+            <button id="btn-reload-sats" class="btn primary" type="button">Sync Satellite Elements</button>
+            <p id="sat-load-status" class="status-msg">CelesTrak SGP4 Online</p>
+          </div>
+
+          <!-- Aviation Tab -->
+          <div class="tab-content" data-tab="aviation">
+            <h3>Global Air Traffic (ADS-B)</h3>
+            <div id="flight-category-list" class="checklist-group"></div>
+            <div class="info-callout">
+              <span class="info-icon">📡</span>
+              <span>OpenSky Network real-time feed with continuous velocity dead-reckoning extrapolation.</span>
+            </div>
+          </div>
+
+          <!-- Maritime Tab -->
+          <div class="tab-content" data-tab="maritime">
+            <h3>Global Maritime Traffic (AIS)</h3>
+            <div id="marine-category-list" class="checklist-group"></div>
+            <div class="info-callout">
+              <span class="info-icon">⚓</span>
+              <span>Navigating 126 oceanic waypoints across Suez, Malacca, Panama, Gibraltar & Cape routes.</span>
+            </div>
+          </div>
+
+          <!-- Hazards Tab -->
+          <div class="tab-content" data-tab="hazards">
+            <h3>Geosphere & Climate Hazards</h3>
+            <label class="hud-checkbox-row">
+              <input id="toggle-quakes" type="checkbox" checked />
+              <span class="hud-label">USGS Real-Time Earthquakes</span>
+            </label>
+            <div class="slider-row">
+              <div class="slider-head">
+                <span>Minimum Magnitude</span>
+                <span id="quake-mag-val" class="mono">M2.5+</span>
+              </div>
+              <input id="quake-mag-slider" type="range" min="2.5" max="6.5" step="0.5" value="2.5" />
+            </div>
+
+            <label class="hud-checkbox-row">
+              <input id="toggle-volcanoes" type="checkbox" checked />
+              <span class="hud-label">Active Volcano Alert Network (GVP)</span>
+            </label>
+            <label class="hud-checkbox-row">
+              <input id="toggle-wildfires" type="checkbox" checked />
+              <span class="hud-label">NASA FIRMS Thermal Hotspots & Wildfires</span>
+            </label>
+            <label class="hud-checkbox-row">
+              <input id="toggle-cyclones" type="checkbox" checked />
+              <span class="hud-label">Tropical Cyclones & Severe Storms</span>
+            </label>
+          </div>
+
+          <!-- Deep Space & Space Weather Tab -->
+          <div class="tab-content" data-tab="spaceops">
+            <h3>Heliophysics & Deep Space Ops</h3>
+            <label class="hud-checkbox-row">
+              <input id="toggle-aurora" type="checkbox" checked />
+              <span class="hud-label">NOAA Dynamic Polar Auroral Curtains</span>
+            </label>
+            <label class="hud-checkbox-row">
+              <input id="toggle-dsn" type="checkbox" checked />
+              <span class="hud-label">NASA Deep Space Network (DSN) Carrier Links</span>
+            </label>
+            <label class="hud-checkbox-row">
+              <input id="toggle-asteroids" type="checkbox" checked />
+              <span class="hud-label">NASA JPL Near-Earth Asteroids (NEOs)</span>
+            </label>
+            <label class="hud-checkbox-row">
+              <input id="toggle-launches" type="checkbox" checked />
+              <span class="hud-label">Global Rocket Launch Complexes & Pad Azimuths</span>
+            </label>
+            <label class="hud-checkbox-row">
+              <input id="toggle-gpsjam" type="checkbox" checked />
+              <span class="hud-label">GPS Jamming & EW Denial Zones</span>
+            </label>
+          </div>
+
+          <!-- Infrastructure Tab -->
+          <div class="tab-content" data-tab="infra">
+            <h3>Critical Planetary Infrastructure</h3>
+            <label class="hud-checkbox-row">
+              <input id="toggle-cables" type="checkbox" checked />
+              <span class="hud-label">Submarine Fiber-Optic Cables & Landing Hubs</span>
+            </label>
+            <label class="hud-checkbox-row">
+              <input id="toggle-nuclear" type="checkbox" checked />
+              <span class="hud-label">Global Nuclear Energy Facilities</span>
+            </label>
+          </div>
+
+          <!-- Layers / Overlays Tab -->
+          <div class="tab-content" data-tab="overlays">
+            <h3>Tactical Scene Layers</h3>
+            <label class="hud-checkbox-row">
+              <input id="toggle-full-daylight" type="checkbox" />
+              <span class="hud-label">Permanent Full Daylight (No Night)</span>
+            </label>
+            <label class="hud-checkbox-row">
+              <input id="toggle-clouds" type="checkbox" checked />
+              <span class="hud-label">Dynamic Atmospheric Clouds</span>
+            </label>
+            <label class="hud-checkbox-row">
+              <input id="toggle-grid" type="checkbox" />
+              <span class="hud-label">Tactical Lat / Lon Coordinate Grid</span>
+            </label>
+            <label class="hud-checkbox-row">
+              <input id="toggle-terminator" type="checkbox" />
+              <span class="hud-label">Solar Day/Night Terminator</span>
+            </label>
+            <label class="hud-checkbox-row">
+              <input id="toggle-orbits" type="checkbox" />
+              <span class="hud-label">Orbit Path Trajectory (Selected)</span>
+            </label>
+            <label class="hud-checkbox-row">
+              <input id="toggle-footprints" type="checkbox" checked />
+              <span class="hud-label">Ground Sensor Footprint</span>
+            </label>
+            <label class="hud-checkbox-row">
+              <input id="toggle-auto-rotate" type="checkbox" />
+              <span class="hud-label">Planetary Rotation Drift</span>
+            </label>
+          </div>
+
+          <!-- Hotspots Tab -->
+          <div class="tab-content" data-tab="hotspots">
+            <h3>Tactical Hotspots & Corridors</h3>
+            <div id="hotspots-list" class="hotspots-list"></div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Right Telemetry Intercept Panel -->
+      <aside id="right-panel" class="hud-panel right-panel">
+        <h2>TACTICAL TELEMETRY</h2>
+
+        <div id="target-empty" class="target-empty">
+          <div class="radar-scope">
+            <div class="radar-sweep"></div>
+            <div class="radar-rings"></div>
+          </div>
+          <p class="muted">Click any satellite, aircraft, vessel, or seismic epicenter on the globe to lock target.</p>
+        </div>
+
+        <div id="target-telemetry" class="target-telemetry hidden">
+          <div class="target-header">
+            <span id="target-domain-badge" class="badge">SATELLITE</span>
+            <span id="target-id" class="target-norad mono">—</span>
+          </div>
+          <h3 id="target-name" class="target-title">—</h3>
+
+          <div class="telemetry-grid">
+            <div class="telemetry-cell">
+              <span class="dt">LATITUDE</span>
+              <span id="target-lat" class="dd mono">—</span>
+            </div>
+            <div class="telemetry-cell">
+              <span class="dt">LONGITUDE</span>
+              <span id="target-lon" class="dd mono">—</span>
+            </div>
+            <div class="telemetry-cell">
+              <span class="dt">ALTITUDE</span>
+              <span id="target-alt" class="dd mono">—</span>
+            </div>
+            <div class="telemetry-cell">
+              <span class="dt">VELOCITY</span>
+              <span id="target-speed" class="dd mono">—</span>
+            </div>
+            <div class="telemetry-cell">
+              <span class="dt">HEADING</span>
+              <span id="target-heading" class="dd mono">—</span>
+            </div>
+          </div>
+
+          <div id="target-meta" class="target-meta"></div>
+
+          <div class="target-actions">
+            <button id="btn-focus" class="btn primary" type="button">Focus Target</button>
+            <button id="btn-chase" class="btn" type="button">Chase Cam</button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Bottom Event Ticker & Simulation Controls -->
+      <footer id="bottom-bar" class="bottom-bar">
+        <div class="ticker-container">
+          <span class="ticker-badge">GLOBAL FEED</span>
+          <span id="ticker-text" class="ticker-text">Command center initialized. Planetary data streams online.</span>
+        </div>
+
+        <div class="time-controls">
+          <div class="speed-control">
+            <span>Speed</span>
+            <input id="time-speed-slider" type="range" min="0" max="60" step="1" value="1" />
+            <span id="time-speed-val" class="mono">1×</span>
+          </div>
+          <div class="btn-group">
+            <button id="btn-time-now" class="btn mini" type="button">Live UTC</button>
+            <button id="btn-time-pause" class="btn mini" type="button">Pause</button>
+          </div>
+          <span id="fps-stats" class="mono stats-badge">60 FPS</span>
+        </div>
+      </footer>
+
+      <!-- Tooltip on hover -->
       <div id="tooltip" class="tooltip hidden"></div>
-      <div id="loading" class="loading">
+
+      <!-- Loading overlay -->
+      <div id="loading" class="loading hidden">
         <div class="spinner"></div>
-        <p>Fetching orbital elements…</p>
+        <p>Connecting to planetary data feeds…</p>
       </div>
     </div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

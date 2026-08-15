@@ -1,12 +1,10 @@
 import * as THREE from 'three';
 import { ATMOSPHERE_SCALE, EARTH_RADIUS } from '../config';
+import { createClouds, type CloudSystem } from './clouds';
 
-const EARTH_DAY =
-  'https://unpkg.com/three-globe@2.31.1/example/img/earth-blue-marble.jpg';
-const EARTH_NIGHT =
-  'https://unpkg.com/three-globe@2.31.1/example/img/earth-night.jpg';
-const EARTH_SPEC =
-  'https://unpkg.com/three-globe@2.31.1/example/img/earth-water.png';
+const EARTH_DAY = '/textures/earth-blue-marble.jpg';
+const EARTH_NIGHT = '/textures/earth-night.jpg';
+const EARTH_SPEC = '/textures/earth-water.png';
 
 const atmosphereVertex = /* glsl */ `
   varying vec3 vNormal;
@@ -35,10 +33,12 @@ const atmosphereFragment = /* glsl */ `
 export interface EarthSystem {
   group: THREE.Group;
   earth: THREE.Mesh;
-  clouds: THREE.Mesh | null;
+  clouds: CloudSystem | null;
   atmosphere: THREE.Mesh;
   sun: THREE.DirectionalLight;
   setSunDirection(dir: THREE.Vector3): void;
+  setFullDaylight(active: boolean): void;
+  update(dt: number): void;
 }
 
 export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthSystem> {
@@ -58,10 +58,10 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = maxAniso;
   }
-  // The water mask is data, not color. Decoding it as sRGB washes out the
-  // distinction between oceans and land and makes the globe look muddy.
   specMap.colorSpace = THREE.NoColorSpace;
   specMap.anisotropy = maxAniso;
+
+  const currentSunDir = new THREE.Vector3(1, 0.2, 0.4).normalize();
 
   // Day/night terminator via custom shader
   const earthMat = new THREE.ShaderMaterial({
@@ -69,7 +69,8 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
       dayMap: { value: dayMap },
       nightMap: { value: nightMap },
       specMap: { value: specMap },
-      sunDirection: { value: new THREE.Vector3(1, 0.2, 0.4).normalize() },
+      sunDirection: { value: currentSunDir.clone() },
+      fullDaylight: { value: 0.0 },
     },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
@@ -88,30 +89,36 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
       uniform sampler2D nightMap;
       uniform sampler2D specMap;
       uniform vec3 sunDirection;
+      uniform float fullDaylight;
       varying vec2 vUv;
       varying vec3 vNormalW;
       varying vec3 vPosW;
+
       void main() {
         vec3 n = normalize(vNormalW);
-        float ndl = dot(n, normalize(sunDirection));
-        float dayness = smoothstep(-0.16, 0.20, ndl);
+        vec3 sunDir = normalize(sunDirection);
+        float ndl = dot(n, sunDir);
+        float rawDayness = smoothstep(-0.16, 0.20, ndl);
+        float dayness = mix(rawDayness, 1.0, fullDaylight);
 
         vec3 day = texture2D(dayMap, vUv).rgb;
-        vec3 night = texture2D(nightMap, vUv).rgb * 1.12;
+        vec3 night = texture2D(nightMap, vUv).rgb * 1.25;
         float water = texture2D(specMap, vUv).r;
 
-        // Lift the intrinsically dark blue-marble source without bleaching it.
+        // Lift dark blue marble without overexposing
         day = pow(day, vec3(0.82));
         float daylight = mix(0.90, 1.18, smoothstep(0.0, 0.85, max(ndl, 0.0)));
+        daylight = mix(daylight, 1.12, fullDaylight);
+
         vec3 dayLit = day * daylight;
         dayLit += vec3(0.025, 0.04, 0.065) * water * dayness;
         vec3 color = mix(night, dayLit, dayness);
 
-        // Specular glint on oceans (day side only)
+        // Ocean specular glint on day side
         vec3 viewDir = normalize(cameraPosition - vPosW);
-        vec3 halfDir = normalize(normalize(sunDirection) + viewDir);
+        vec3 halfDir = normalize(sunDir + viewDir);
         float spec = pow(max(dot(n, halfDir), 0.0), 48.0) * water * dayness;
-        color += vec3(0.60, 0.76, 1.0) * spec * 0.24;
+        color += vec3(0.60, 0.76, 1.0) * spec * 0.25;
 
         // Soft limb darkening
         float limb = pow(max(dot(n, viewDir), 0.0), 0.35);
@@ -128,6 +135,16 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
   );
   group.add(earth);
 
+  // Dynamic cloud layer
+  let clouds: CloudSystem | null = null;
+  try {
+    clouds = await createClouds();
+    group.add(clouds.mesh);
+  } catch (err) {
+    console.warn('Could not initialize clouds:', err);
+  }
+
+  // Inner atmosphere glow
   const atmosphere = new THREE.Mesh(
     new THREE.SphereGeometry(EARTH_RADIUS * ATMOSPHERE_SCALE, 64, 64),
     new THREE.ShaderMaterial({
@@ -163,34 +180,45 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
   );
   group.add(halo);
 
-  const sun = new THREE.DirectionalLight(0xffffff, 0); // shading is in earth shader
+  const sun = new THREE.DirectionalLight(0xffffff, 0);
   sun.position.set(5, 1, 2);
 
   return {
     group,
     earth,
-    clouds: null,
+    clouds,
     atmosphere,
     sun,
     setSunDirection(dir: THREE.Vector3) {
+      currentSunDir.copy(dir);
       (earth.material as THREE.ShaderMaterial).uniforms.sunDirection.value.copy(dir);
       sun.position.copy(dir).multiplyScalar(10);
+    },
+    setFullDaylight(active: boolean) {
+      (earth.material as THREE.ShaderMaterial).uniforms.fullDaylight.value = active ? 1.0 : 0.0;
+      if (clouds) {
+        clouds.setFullDaylight(active);
+      }
+    },
+    update(dt: number) {
+      if (clouds) {
+        clouds.update(dt, currentSunDir);
+      }
     },
   };
 }
 
-export function createStarfield(count = 6000): THREE.Points {
+export function createStarfield(count = 7500): THREE.Points {
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
   const color = new THREE.Color();
 
   for (let i = 0; i < count; i++) {
-    // Uniform on sphere shell
     const u = Math.random();
     const v = Math.random();
     const theta = 2 * Math.PI * u;
     const phi = Math.acos(2 * v - 1);
-    const r = 40 + Math.random() * 60;
+    const r = 45 + Math.random() * 65;
     const i3 = i * 3;
     positions[i3] = r * Math.sin(phi) * Math.cos(theta);
     positions[i3 + 1] = r * Math.sin(phi) * Math.sin(theta);
