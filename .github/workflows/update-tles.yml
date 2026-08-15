@@ -23,14 +23,33 @@ jobs:
 
       - name: Fetch TLE groups
         run: |
-          mkdir -p tle-data
-          for g in starlink oneweb stations gps-ops; do
+          # Primary: CelesTrak (friendly UA). Fallback: the GitHub-hosted
+          # changshuospace mirror (JSON) — same infra as the runner, so it
+          # never hits CelesTrak's egress throttling.
+          fetch_group() {
+            local g="$1" mirror="$2"
             echo "Fetching $g…"
-            curl -sS --fail --max-time 120 -A "Earth-Command-CI/1.0 (tle-refresh)" \
-              "https://celestrak.org/NORAD/elements/gp.php?GROUP=$g&FORMAT=tle" \
-              -o "tle-data/$g.tle" && echo "  ok: $(wc -c < tle-data/$g.tle) bytes" \
-              || echo "  FAILED: keeping previous snapshot"
-          done
+            if curl -sS --fail --max-time 60 -A "Earth-Command-CI/1.0 (tle-refresh)" \
+                "https://celestrak.org/NORAD/elements/gp.php?GROUP=$g&FORMAT=tle" \
+                -o "tle-data/$g.tle" && [ -s "tle-data/$g.tle" ]; then
+              echo "  ok: $(wc -c < tle-data/$g.tle) bytes (celestrak)"
+            elif curl -sS --fail --max-time 60 -L \
+                "https://github.com/Singingkettle/changshuospace-tle-mirror/releases/download/latest/$mirror.json" \
+                -o "tle-data/$g.json"; then
+              jq -r '.[] | select(.TLE_LINE1 != null and .TLE_LINE2 != null) | "\(.OBJECT_NAME // "UNKNOWN")\n\(.TLE_LINE1)\n\(.TLE_LINE2)"' \
+                "tle-data/$g.json" > "tle-data/$g.tle"
+              rm -f "tle-data/$g.json"
+              echo "  ok: $(wc -c < tle-data/$g.tle) bytes (github mirror)"
+            else
+              echo "  FAILED: keeping previous snapshot"
+              rm -f "tle-data/$g.tle"
+            fi
+          }
+          mkdir -p tle-data
+          fetch_group starlink starlink
+          fetch_group oneweb oneweb
+          fetch_group stations stations
+          fetch_group gps-ops gps
           # Drop files that failed so we never serve stale-as-missing
           find tle-data -name '*.tle' -size 0 -delete
 
