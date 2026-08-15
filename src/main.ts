@@ -13,31 +13,32 @@ import {
   type SatGroupId,
   type SelectedTarget,
 } from './config';
-import { AircraftScene } from './flight/aircraftScene';
+import {
+  createDomainLayers,
+  type DomainAdapter,
+  type SearchResult,
+} from './domains/registry';
 import { FlightEngine } from './flight/engine';
-import { CyclonesScene } from './geo/cyclonesScene';
-import { EarthquakeSystem } from './geo/earthquakes';
-import { VolcanoesScene } from './geo/volcanoesScene';
-import { WildfiresScene } from './geo/wildfiresScene';
-import { LANDING_STATIONS } from './infra/cables';
-import { SubmarineCablesScene } from './infra/cablesScene';
-import { NUCLEAR_PLANTS } from './infra/nuclear';
-import { NuclearScene } from './infra/nuclearScene';
+import { AircraftScene } from './flight/aircraftScene';
 import { MarineEngine } from './marine/engine';
 import { MarineScene } from './marine/marineScene';
+import { EarthquakeSystem } from './geo/earthquakes';
+import { SubmarineCablesScene } from './infra/cablesScene';
+import { NuclearScene } from './infra/nuclearScene';
+import { DsnScene } from './space/dsnScene';
+import { AuroraScene } from './space/auroraScene';
+import { AsteroidsScene } from './space/asteroidsScene';
+import { LaunchesScene } from './space/launchesScene';
+import { WildfiresScene } from './geo/wildfiresScene';
+import { VolcanoesScene } from './geo/volcanoesScene';
+import { CyclonesScene } from './geo/cyclonesScene';
+import { GpsJamScene } from './tactical/gpsJamScene';
 import { propagateCatalog } from './orbit/propagator';
 import { createEarth, createStarfield } from './scene/earth';
 import { TacticalGrids } from './scene/grids';
 import { SelectionOverlays } from './scene/overlays';
 import { SatelliteCloud } from './scene/satellites';
 import { TargetLockController } from './scene/targetLock';
-import { AsteroidsScene } from './space/asteroidsScene';
-import { AuroraScene } from './space/auroraScene';
-import { DSN_COMPLEXES } from './space/dsn';
-import { DsnScene } from './space/dsnScene';
-import { LaunchesScene } from './space/launchesScene';
-import { GpsJamScene } from './tactical/gpsJamScene';
-import { GPS_JAM_ZONES } from './tactical/gpsJam';
 import { loadCatalog } from './tle/catalog';
 import { CommandCenterUI, type OverlayType } from './ui/commandCenter';
 
@@ -87,87 +88,106 @@ scene.add(stars);
 // Multi-Domain Engines & Renderers
 // ---------------------------------------------------------------------------
 
-// 1. Orbital Satellites
 const satCloud = new SatelliteCloud();
 scene.add(satCloud.points);
 
 const satOverlays = new SelectionOverlays();
 scene.add(satOverlays.group);
 
-// 2. Aviation (ADS-B Flights)
 const flightEngine = new FlightEngine();
 const flightScene = new AircraftScene();
 flightScene.setAircraft(flightEngine.list);
 scene.add(flightScene.points);
 
-// 3. Maritime Traffic (AIS Ships)
 const marineEngine = new MarineEngine();
 const marineScene = new MarineScene();
 marineScene.setVessels(marineEngine.list);
 scene.add(marineScene.points);
 
-// 4. Geosphere (USGS Earthquakes)
 const earthquakeSystem = new EarthquakeSystem();
 scene.add(earthquakeSystem.points);
 
-// 5. Tactical Grids & Solar Terminator
 const tacticalGrids = new TacticalGrids();
 scene.add(tacticalGrids.group);
 
-// 6. Submarine Fiber Cables & Landing Stations
 const cablesScene = new SubmarineCablesScene();
 scene.add(cablesScene.group);
 cablesScene.setVisible(true);
 
-// 7. Global Nuclear Power Facilities
 const nuclearScene = new NuclearScene();
 scene.add(nuclearScene.points);
 nuclearScene.setVisible(true);
 
-// 8. NASA Deep Space Network (DSN)
 const dsnScene = new DsnScene();
 scene.add(dsnScene.group);
 dsnScene.setVisible(true);
 
-// 9. NOAA Space Weather Auroral Oval
 const auroraScene = new AuroraScene();
 scene.add(auroraScene.group);
 auroraScene.setVisible(true);
 
-// 10. NASA JPL Near-Earth Asteroids
 const asteroidsScene = new AsteroidsScene();
 scene.add(asteroidsScene.group);
 asteroidsScene.setVisible(true);
 
-// 11. Rocket Launch Sites & Countdowns
 const launchesScene = new LaunchesScene();
 scene.add(launchesScene.group);
 launchesScene.setVisible(true);
 
-// 12. NASA FIRMS Live Wildfires
 const wildfiresScene = new WildfiresScene();
 scene.add(wildfiresScene.points);
 wildfiresScene.setVisible(true);
 
-// 13. Active Volcano Alert Network
 const volcanoesScene = new VolcanoesScene();
 scene.add(volcanoesScene.points);
 volcanoesScene.setVisible(true);
 
-// 14. Tropical Cyclones & Severe Storms
 const cyclonesScene = new CyclonesScene();
 scene.add(cyclonesScene.points);
 cyclonesScene.setVisible(true);
 
-// 15. GPS Jamming & EW Denial Zones
 const gpsJamScene = new GpsJamScene();
 scene.add(gpsJamScene.points);
 gpsJamScene.setVisible(true);
 
-// 16. Target Lock & Chase Cam Controller
-const targetLock = new TargetLockController(reticleEl, camera, controls, canvas, () => {
-  commandUI?.setChaseButtonState(false);
+// ---------------------------------------------------------------------------
+// Domain Registry — selection, picking, search, toggles, animation ticks
+// ---------------------------------------------------------------------------
+
+const layers = createDomainLayers({
+  satCloud,
+  satOverlays,
+  flightEngine,
+  flightScene,
+  marineEngine,
+  marineScene,
+  earthquakeSystem,
+  cablesScene,
+  nuclearScene,
+  dsnScene,
+  auroraScene,
+  asteroidsScene,
+  launchesScene,
+  wildfiresScene,
+  volcanoesScene,
+  cyclonesScene,
+  gpsJamScene,
 });
+const layerById = new Map(layers.map((l) => [l.id, l]));
+
+/** Overlay panel toggles that map 1:1 onto a registered domain layer. */
+const OVERLAY_DOMAIN: Partial<Record<OverlayType, DomainType>> = {
+  quakes: 'earthquake',
+  volcanoes: 'volcano',
+  wildfires: 'wildfire',
+  cyclones: 'cyclone',
+  dsn: 'dsn',
+  asteroids: 'asteroid',
+  launches: 'launch',
+  gpsjam: 'gpsjam',
+  cables: 'cable',
+  nuclear: 'nuclear',
+};
 
 // ---------------------------------------------------------------------------
 // Simulation State
@@ -184,11 +204,11 @@ let lastQuakePollMs = 0;
 let lastSunUpdateMs = Number.NEGATIVE_INFINITY;
 let earthSystem: Awaited<ReturnType<typeof createEarth>> | null = null;
 
-// Multi-domain selection state
+// Multi-domain selection state: active index per domain (-1 = none)
 let currentSelectedTarget: SelectedTarget | null = null;
-let selectedSatelliteIndex = -1;
-let selectedFlightIndex = -1;
-let selectedMarineIndex = -1;
+const selectedIndexByDomain = new Map<DomainType, number>(
+  layers.map((l) => [l.id, -1]),
+);
 
 // Active satellite group filters
 const activeSatGroups = new Set<SatGroupId>(
@@ -204,7 +224,6 @@ let pointerDownPos = { x: 0, y: 0 };
 // FPS
 let fpsFrames = 0;
 let fpsLast = performance.now();
-const tmpPos = new THREE.Vector3();
 
 // ---------------------------------------------------------------------------
 // Solar Vector Calculation (NOAA Equations)
@@ -248,13 +267,11 @@ function sunDirectionForDate(date: Date): THREE.Vector3 {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-Domain Picking & Selection Logic
+// Multi-Domain Selection (registry-driven)
 // ---------------------------------------------------------------------------
 
 function clearSelection(): void {
-  selectedSatelliteIndex = -1;
-  selectedFlightIndex = -1;
-  selectedMarineIndex = -1;
+  for (const layer of layers) selectedIndexByDomain.set(layer.id, -1);
   currentSelectedTarget = null;
 
   satOverlays.clear();
@@ -262,406 +279,40 @@ function clearSelection(): void {
   commandUI.showTarget(null);
 }
 
-function selectSatellite(index: number, flyTo = false): void {
-  if (index < 0 || index >= satCloud.count) {
+function selectVia(layer: DomainAdapter, index: number, flyTo = false): void {
+  if (index < 0 || index >= layer.count()) {
     clearSelection();
     return;
   }
   clearSelection();
-  selectedSatelliteIndex = index;
+  selectedIndexByDomain.set(layer.id, index);
+  layer.highlight(index);
 
-  const meta = satCloud.catalog[index];
-  satCloud.getDisplayPosition(index, tmpPos);
   const simDate = new Date(simTimeMs);
-
-  const altKm = satCloud.altKm[index] || 500;
-  const lat = satCloud.lat[index] || 0;
-  const lon = satCloud.lon[index] || 0;
-  const speedKmh = (satCloud.speedKms[index] || 7.5) * 3600;
-
-  currentSelectedTarget = {
-    domain: 'satellite',
-    id: `NORAD ${meta.noradId}`,
-    name: meta.name,
-    subType: meta.groupId.toUpperCase(),
-    lat,
-    lon,
-    altKm,
-    speedKmh,
-    scenePos: [tmpPos.x, tmpPos.y, tmpPos.z],
-  };
-
-  commandUI.showTarget(currentSelectedTarget);
-  satOverlays.updateOrbit(meta, simDate);
-  satOverlays.updateFootprint(lat, lon, altKm);
-  satOverlays.updateMarker(tmpPos.x, tmpPos.y, tmpPos.z);
-
-  targetLock.setTarget(
-    { x: tmpPos.x, y: tmpPos.y, z: tmpPos.z, label: meta.name, speedKmh, altKm },
-    flyTo,
-  );
-}
-
-function selectFlight(index: number, flyTo = false): void {
-  if (index < 0 || index >= flightEngine.count) {
+  const target = layer.buildTarget(index, simDate);
+  if (!target) {
     clearSelection();
     return;
   }
-  clearSelection();
-  selectedFlightIndex = index;
-  flightScene.highlight(index);
 
-  const a = flightEngine.list[index];
-  currentSelectedTarget = {
-    domain: 'flight',
-    id: `ICAO ${a.icao24.toUpperCase()}`,
-    name: a.callsign || 'AIRCRAFT',
-    subType: a.category.toUpperCase(),
-    lat: a.lat,
-    lon: a.lon,
-    altKm: a.altKm,
-    speedKmh: a.speedKmh,
-    heading: a.headingDeg,
-    origin: a.origin,
-    destination: a.destination,
-    country: a.country,
-    scenePos: [a.x, a.y, a.z],
-  };
-
-  commandUI.showTarget(currentSelectedTarget);
+  currentSelectedTarget = target;
+  commandUI.showTarget(target);
   targetLock.setTarget(
-    { x: a.x, y: a.y, z: a.z, label: a.callsign || 'FLIGHT', speedKmh: a.speedKmh, altKm: a.altKm },
+    {
+      x: target.scenePos[0],
+      y: target.scenePos[1],
+      z: target.scenePos[2],
+      label: target.name,
+      speedKmh: target.speedKmh,
+      altKm: target.altKm,
+    },
     flyTo,
   );
-}
-
-function selectMarine(index: number, flyTo = false): void {
-  if (index < 0 || index >= marineEngine.count) {
-    clearSelection();
-    return;
-  }
-  clearSelection();
-  selectedMarineIndex = index;
-  marineScene.highlight(index);
-
-  const v = marineEngine.list[index];
-  currentSelectedTarget = {
-    domain: 'marine',
-    id: `MMSI ${v.mmsi}`,
-    name: v.name,
-    subType: v.category.toUpperCase(),
-    lat: v.lat,
-    lon: v.lon,
-    altKm: 0,
-    speedKmh: v.speedKmh,
-    heading: v.headingDeg,
-    origin: v.originPort,
-    destination: v.destPort,
-    country: v.flag,
-    scenePos: [v.x, v.y, v.z],
-  };
-
-  commandUI.showTarget(currentSelectedTarget);
-  targetLock.setTarget(
-    { x: v.x, y: v.y, z: v.z, label: v.name, speedKmh: v.speedKmh, altKm: 0 },
-    flyTo,
-  );
-}
-
-function selectQuake(index: number, flyTo = false): void {
-  if (index < 0 || index >= earthquakeSystem.list.length) {
-    clearSelection();
-    return;
-  }
-  clearSelection();
-  earthquakeSystem.highlight(index);
-
-  const q = earthquakeSystem.list[index];
-  currentSelectedTarget = {
-    domain: 'earthquake',
-    id: `USGS ${q.id}`,
-    name: q.place,
-    subType: `Mag ${q.mag.toFixed(1)} Seismic`,
-    lat: q.lat,
-    lon: q.lon,
-    altKm: -q.depthKm,
-    speedKmh: 0,
-    origin: `${q.depthKm} km Focal Depth`,
-    destination: new Date(q.timeMs).toUTCString(),
-    country: 'Tectonic Fault',
-    scenePos: [q.x, q.y, q.z],
-  };
-
-  commandUI.showTarget(currentSelectedTarget);
-  targetLock.setTarget(
-    { x: q.x, y: q.y, z: q.z, label: `M${q.mag.toFixed(1)} QUAKE`, speedKmh: 0, altKm: 0 },
-    flyTo,
-  );
-}
-
-function selectCable(index: number, flyTo = false): void {
-  if (index < 0 || index >= LANDING_STATIONS.length) return;
-  clearSelection();
-  cablesScene.highlight(index);
-
-  const st = LANDING_STATIONS[index];
-  currentSelectedTarget = {
-    domain: 'cable',
-    id: `CABLE-HUB`,
-    name: st.name,
-    subType: 'Subsea Fiber Hub',
-    lat: st.lat,
-    lon: st.lon,
-    altKm: 0,
-    speedKmh: 0,
-    country: st.country,
-    extra: {
-      'Connected Cables': st.cables.join(', '),
-      'Global Capacity': '100+ Tbps DWDM',
-    },
-    scenePos: [st.x, st.y, st.z],
-  };
-
-  commandUI.showTarget(currentSelectedTarget);
-  targetLock.setTarget({ x: st.x, y: st.y, z: st.z, label: st.name, speedKmh: 0, altKm: 0 }, flyTo);
-}
-
-function selectNuclear(index: number, flyTo = false): void {
-  if (index < 0 || index >= NUCLEAR_PLANTS.length) return;
-  clearSelection();
-  nuclearScene.highlight(index);
-
-  const p = NUCLEAR_PLANTS[index];
-  currentSelectedTarget = {
-    domain: 'nuclear',
-    id: `NUC-${p.id.toUpperCase()}`,
-    name: p.name,
-    subType: `${p.reactorType} (${p.activeUnits} Units)`,
-    lat: p.lat,
-    lon: p.lon,
-    altKm: 0,
-    speedKmh: 0,
-    country: p.country,
-    operator: p.operator,
-    extra: {
-      'Capacity (Net)': `${p.capacityMwe.toLocaleString()} MWe`,
-      'Reactor Type': p.reactorType,
-      'Active Units': `${p.activeUnits} Reactors`,
-    },
-    scenePos: [p.x, p.y, p.z],
-  };
-
-  commandUI.showTarget(currentSelectedTarget);
-  targetLock.setTarget({ x: p.x, y: p.y, z: p.z, label: p.name, speedKmh: 0, altKm: 0 }, flyTo);
-}
-
-function selectDsn(index: number, flyTo = false): void {
-  if (index < 0 || index >= DSN_COMPLEXES.length) return;
-  clearSelection();
-  dsnScene.highlight(index);
-
-  const c = DSN_COMPLEXES[index];
-  currentSelectedTarget = {
-    domain: 'dsn',
-    id: `DSN-${c.id.toUpperCase()}`,
-    name: c.name,
-    subType: 'Deep Space Ground Station',
-    lat: c.lat,
-    lon: c.lon,
-    altKm: 0,
-    speedKmh: 0,
-    country: `${c.country} (${c.location})`,
-    extra: {
-      'Active Probe Track': c.activeProbe,
-      'Antenna Array': c.antennas.join(', '),
-      'Carrier Band': c.frequencyBand,
-      'Data Downlink': c.dataRate,
-    },
-    scenePos: [c.x, c.y, c.z],
-  };
-
-  commandUI.showTarget(currentSelectedTarget);
-  targetLock.setTarget({ x: c.x, y: c.y, z: c.z, label: c.name, speedKmh: 0, altKm: 0 }, flyTo);
-}
-
-function selectAsteroid(index: number, flyTo = false): void {
-  if (index < 0 || index >= asteroidsScene.list.length) return;
-  clearSelection();
-  asteroidsScene.highlight(index);
-
-  const a = asteroidsScene.list[index];
-  currentSelectedTarget = {
-    domain: 'asteroid',
-    id: `NEO ${a.id}`,
-    name: a.name,
-    subType: a.orbitClass,
-    lat: 0,
-    lon: 0,
-    altKm: a.missDistanceKm,
-    speedKmh: a.velocityKms * 3600,
-    country: 'Solar System Heliocentric Orbit',
-    extra: {
-      'Estimated Diameter': `${a.diameterM} m`,
-      'Miss Distance': `${a.missDistanceLd} LD (${a.missDistanceKm.toLocaleString()} km)`,
-      'Relative Velocity': `${a.velocityKms} km/s`,
-      'Hazard Classification': a.hazardLevel,
-      'Close Approach': a.closeApproachDate,
-    },
-    scenePos: [a.sceneX, a.sceneY, a.sceneZ],
-  };
-
-  commandUI.showTarget(currentSelectedTarget);
-  targetLock.setTarget({ x: a.sceneX, y: a.sceneY, z: a.sceneZ, label: a.name, speedKmh: a.velocityKms * 3600, altKm: a.missDistanceKm }, flyTo);
-}
-
-function selectLaunch(index: number, flyTo = false): void {
-  if (index < 0 || index >= launchesScene.list.length) return;
-  clearSelection();
-  launchesScene.highlight(index);
-
-  const sp = launchesScene.list[index];
-  currentSelectedTarget = {
-    domain: 'launch',
-    id: `PAD-${sp.id.toUpperCase()}`,
-    name: sp.name,
-    subType: 'Orbital Spaceport',
-    lat: sp.lat,
-    lon: sp.lon,
-    altKm: 0,
-    speedKmh: 0,
-    country: sp.country,
-    operator: sp.operator,
-    extra: {
-      'Next Mission': sp.nextMission,
-      'Rocket Vehicle': sp.nextRocket,
-      'Target Orbit': sp.targetOrbit,
-      'Launch Azimuth': `${sp.launchAzimuthDeg}° True`,
-    },
-    scenePos: [sp.x, sp.y, sp.z],
-  };
-
-  commandUI.showTarget(currentSelectedTarget);
-  targetLock.setTarget({ x: sp.x, y: sp.y, z: sp.z, label: sp.name, speedKmh: 0, altKm: 0 }, flyTo);
-}
-
-function selectVolcano(index: number, flyTo = false): void {
-  if (index < 0 || index >= volcanoesScene.list.length) return;
-  clearSelection();
-  volcanoesScene.highlight(index);
-
-  const v = volcanoesScene.list[index];
-  currentSelectedTarget = {
-    domain: 'volcano',
-    id: `VOLC-${v.id.toUpperCase()}`,
-    name: v.name,
-    subType: v.type,
-    lat: v.lat,
-    lon: v.lon,
-    altKm: v.elevationM / 1000,
-    speedKmh: 0,
-    country: v.country,
-    extra: {
-      'Alert Level': v.alertLevel,
-      'Caldera Elevation': `${v.elevationM} m`,
-      'Volcano Type': v.type,
-      'Activity Status': v.recentActivity,
-    },
-    scenePos: [v.x, v.y, v.z],
-  };
-
-  commandUI.showTarget(currentSelectedTarget);
-  targetLock.setTarget({ x: v.x, y: v.y, z: v.z, label: v.name, speedKmh: 0, altKm: v.elevationM / 1000 }, flyTo);
-}
-
-function selectWildfire(index: number, flyTo = false): void {
-  if (index < 0 || index >= wildfiresScene.list.length) return;
-  clearSelection();
-  wildfiresScene.highlight(index);
-
-  const f = wildfiresScene.list[index];
-  currentSelectedTarget = {
-    domain: 'wildfire',
-    id: `FIRMS-${f.id.toUpperCase()}`,
-    name: f.name,
-    subType: 'Thermal Fire Cluster',
-    lat: f.lat,
-    lon: f.lon,
-    altKm: 0,
-    speedKmh: 0,
-    country: `${f.country} (${f.region})`,
-    extra: {
-      'Brightness Temp': `${f.brightnessK} K`,
-      'Fire Radiative Power': `${f.frpMw} MW`,
-      'Detection Satellite': f.satellite,
-      'Algorithm Confidence': f.confidence,
-    },
-    scenePos: [f.x, f.y, f.z],
-  };
-
-  commandUI.showTarget(currentSelectedTarget);
-  targetLock.setTarget({ x: f.x, y: f.y, z: f.z, label: f.name, speedKmh: 0, altKm: 0 }, flyTo);
-}
-
-function selectCyclone(index: number, flyTo = false): void {
-  if (index < 0 || index >= cyclonesScene.list.length) return;
-  clearSelection();
-  cyclonesScene.highlight(index);
-
-  const c = cyclonesScene.list[index];
-  currentSelectedTarget = {
-    domain: 'cyclone',
-    id: `STORM-${c.id.toUpperCase()}`,
-    name: c.name,
-    subType: c.categoryLabel,
-    lat: c.lat,
-    lon: c.lon,
-    altKm: 12.0,
-    speedKmh: c.movementSpeedKmh,
-    country: c.basin,
-    extra: {
-      'Sustained Winds': `${c.maxWindsKts} kts (${c.maxWindsKmh} km/h)`,
-      'Central Pressure': `${c.pressureHpa} hPa`,
-      'Movement Track': `${c.movementDirDeg}° at ${c.movementSpeedKmh} km/h`,
-      'Storm Classification': `Category ${c.category}`,
-    },
-    scenePos: [c.x, c.y, c.z],
-  };
-
-  commandUI.showTarget(currentSelectedTarget);
-  targetLock.setTarget({ x: c.x, y: c.y, z: c.z, label: c.name, speedKmh: c.movementSpeedKmh, altKm: 12.0 }, flyTo);
-}
-
-function selectGpsJam(index: number, flyTo = false): void {
-  if (index < 0 || index >= gpsJamScene.list.length) return;
-  clearSelection();
-  gpsJamScene.highlight(index);
-
-  const z = gpsJamScene.list[index];
-  currentSelectedTarget = {
-    domain: 'gpsjam',
-    id: `EW-${z.id.toUpperCase()}`,
-    name: z.name,
-    subType: z.severity,
-    lat: z.lat,
-    lon: z.lon,
-    altKm: 0,
-    speedKmh: 0,
-    country: z.region,
-    extra: {
-      'GNSS Degradation': `${z.interferencePct}% High Interference`,
-      'Affected Signals': z.affectedBands.join(', '),
-      'Affected Radius': `${z.radiusKm} km`,
-      'Interference Class': z.severity,
-    },
-    scenePos: [z.x, z.y, z.z],
-  };
-
-  commandUI.showTarget(currentSelectedTarget);
-  targetLock.setTarget({ x: z.x, y: z.y, z: z.z, label: z.name, speedKmh: 0, altKm: 0 }, flyTo);
+  layer.afterSelect?.(index, target, simDate);
 }
 
 // ---------------------------------------------------------------------------
-// Unified Pointer Raycasting Across All 10 Domains
+// Unified Pointer Raycasting Across All Domains
 // ---------------------------------------------------------------------------
 
 function onPointerDown(e: MouseEvent): void {
@@ -684,95 +335,13 @@ function onPointerUp(e: MouseEvent): void {
 
   raycaster.setFromCamera(pointer, camera);
 
-  // 1. Asteroids
-  const astIdx = asteroidsScene.pick(raycaster, camera);
-  if (astIdx >= 0) {
-    selectAsteroid(astIdx);
-    return;
-  }
-
-  // 2. Spaceports
-  const launchIdx = launchesScene.pick(raycaster, camera);
-  if (launchIdx >= 0) {
-    selectLaunch(launchIdx);
-    return;
-  }
-
-  // 3. DSN Dishes
-  const dsnIdx = dsnScene.pick(raycaster, camera);
-  if (dsnIdx >= 0) {
-    selectDsn(dsnIdx);
-    return;
-  }
-
-  // 4. Volcanoes
-  const volcIdx = volcanoesScene.pick(raycaster, camera);
-  if (volcIdx >= 0) {
-    selectVolcano(volcIdx);
-    return;
-  }
-
-  // 5. Wildfires
-  const fireIdx = wildfiresScene.pick(raycaster, camera);
-  if (fireIdx >= 0) {
-    selectWildfire(fireIdx);
-    return;
-  }
-
-  // 6. Cyclones
-  const cycIdx = cyclonesScene.pick(raycaster, camera);
-  if (cycIdx >= 0) {
-    selectCyclone(cycIdx);
-    return;
-  }
-
-  // 7. GPS Jamming
-  const jamIdx = gpsJamScene.pick(raycaster, camera);
-  if (jamIdx >= 0) {
-    selectGpsJam(jamIdx);
-    return;
-  }
-
-  // 8. Nuclear Plants
-  const nucIdx = nuclearScene.pick(raycaster, camera);
-  if (nucIdx >= 0) {
-    selectNuclear(nucIdx);
-    return;
-  }
-
-  // 9. Submarine Cable Landing Stations
-  const cableIdx = cablesScene.pick(raycaster, camera);
-  if (cableIdx >= 0) {
-    selectCable(cableIdx);
-    return;
-  }
-
-  // 10. Earthquakes
-  const quakeIdx = earthquakeSystem.pick(raycaster, camera);
-  if (quakeIdx >= 0) {
-    selectQuake(quakeIdx);
-    return;
-  }
-
-  // 11. Flights
-  const flightIdx = flightScene.pick(raycaster, camera);
-  if (flightIdx >= 0) {
-    selectFlight(flightIdx);
-    return;
-  }
-
-  // 12. Ships
-  const marineIdx = marineScene.pick(raycaster, camera);
-  if (marineIdx >= 0) {
-    selectMarine(marineIdx);
-    return;
-  }
-
-  // 13. Satellites
-  const satIdx = satCloud.pick(raycaster, camera);
-  if (satIdx >= 0) {
-    selectSatellite(satIdx);
-    return;
+  // Layers are ordered by pick priority (asteroids first, sats last).
+  for (const layer of layers) {
+    const idx = layer.pick(raycaster, camera);
+    if (idx >= 0) {
+      selectVia(layer, idx);
+      return;
+    }
   }
 
   clearSelection();
@@ -812,52 +381,25 @@ const commandUI = new CommandCenterUI({
       tacticalGrids.setTerminatorVisible(checked);
     } else if (overlay === 'orbits') {
       satOverlays.setShowOrbit(checked);
-      if (checked && selectedSatelliteIndex >= 0) {
-        satOverlays.updateOrbit(satCloud.catalog[selectedSatelliteIndex], new Date(simTimeMs));
+      const satIdx = selectedIndexByDomain.get('satellite') ?? -1;
+      if (checked && satIdx >= 0) {
+        satOverlays.updateOrbit(satCloud.catalog[satIdx], new Date(simTimeMs));
       }
     } else if (overlay === 'footprints') {
       satOverlays.setShowFootprint(checked);
-    } else if (overlay === 'quakes') {
-      earthquakeSystem.setVisible(checked);
-    } else if (overlay === 'volcanoes') {
-      volcanoesScene.setVisible(checked);
-    } else if (overlay === 'wildfires') {
-      wildfiresScene.setVisible(checked);
-    } else if (overlay === 'cyclones') {
-      cyclonesScene.setVisible(checked);
     } else if (overlay === 'aurora') {
       auroraScene.setVisible(checked);
-    } else if (overlay === 'dsn') {
-      dsnScene.setVisible(checked);
-    } else if (overlay === 'asteroids') {
-      asteroidsScene.setVisible(checked);
-    } else if (overlay === 'launches') {
-      launchesScene.setVisible(checked);
-    } else if (overlay === 'gpsjam') {
-      gpsJamScene.setVisible(checked);
-    } else if (overlay === 'cables') {
-      cablesScene.setVisible(checked);
-    } else if (overlay === 'nuclear') {
-      nuclearScene.setVisible(checked);
+    } else {
+      const domain = OVERLAY_DOMAIN[overlay];
+      if (domain) layerById.get(domain)?.setVisible(checked);
     }
   },
   onHotspotSelect(hotspot: HotspotPreset) {
     targetLock.flyToCoord(hotspot.lat, hotspot.lon, hotspot.altitudeUnits, 1.4);
   },
   onTargetSearchSelect({ domain, index }) {
-    if (domain === 'satellite') selectSatellite(index, true);
-    else if (domain === 'flight') selectFlight(index, true);
-    else if (domain === 'marine') selectMarine(index, true);
-    else if (domain === 'earthquake') selectQuake(index, true);
-    else if (domain === 'cable') selectCable(index, true);
-    else if (domain === 'nuclear') selectNuclear(index, true);
-    else if (domain === 'dsn') selectDsn(index, true);
-    else if (domain === 'asteroid') selectAsteroid(index, true);
-    else if (domain === 'launch') selectLaunch(index, true);
-    else if (domain === 'volcano') selectVolcano(index, true);
-    else if (domain === 'wildfire') selectWildfire(index, true);
-    else if (domain === 'cyclone') selectCyclone(index, true);
-    else if (domain === 'gpsjam') selectGpsJam(index, true);
+    const layer = layerById.get(domain);
+    if (layer) selectVia(layer, index, true);
   },
   onChaseCamToggle(active: boolean) {
     targetLock.setChaseCam(active);
@@ -889,124 +431,32 @@ const commandUI = new CommandCenterUI({
   },
 });
 
+// Target lock & chase cam controller (after UI so the disengage callback is safe)
+const targetLock = new TargetLockController(reticleEl, camera, controls, canvas, () => {
+  commandUI?.setChaseButtonState(false);
+});
+
 // Auto-rotate toggle
 document.querySelector<HTMLInputElement>('#toggle-auto-rotate')?.addEventListener('change', (e) => {
   autoRotate = (e.target as HTMLInputElement).checked;
 });
 
 // ---------------------------------------------------------------------------
-// Global Search Event Ingestion Across All 10 Domains
+// Global Search Event Ingestion Across All Domains
 // ---------------------------------------------------------------------------
 
 window.addEventListener('commandcenter:search', (e: Event) => {
   const query = ((e as CustomEvent).detail?.query || '').toLowerCase().trim();
   if (!query) return;
 
-  const results: Array<{ domain: DomainType; index: number; name: string; extra: string }> = [];
+  const results: SearchResult[] = [];
+  const push = (r: SearchResult) => {
+    if (results.length < 20) results.push(r);
+  };
 
-  // 1. Satellites
-  satCloud.catalog.forEach((s, idx) => {
-    if (results.length >= 20) return;
-    if (s.name.toLowerCase().includes(query) || s.noradId.toString().includes(query)) {
-      results.push({ domain: 'satellite', index: idx, name: s.name, extra: `NORAD ${s.noradId} (${s.groupId})` });
-    }
-  });
-
-  // 2. Flights
-  flightEngine.list.forEach((f, idx) => {
-    if (results.length >= 20) return;
-    if (f.callsign.toLowerCase().includes(query) || f.icao24.toLowerCase().includes(query)) {
-      results.push({ domain: 'flight', index: idx, name: f.callsign || f.icao24, extra: `${f.origin} → ${f.destination}` });
-    }
-  });
-
-  // 3. Ships
-  marineEngine.list.forEach((m, idx) => {
-    if (results.length >= 20) return;
-    if (m.name.toLowerCase().includes(query) || m.mmsi.includes(query)) {
-      results.push({ domain: 'marine', index: idx, name: m.name, extra: `${m.category.toUpperCase()} (${m.flag})` });
-    }
-  });
-
-  // 4. Earthquakes
-  earthquakeSystem.list.forEach((q, idx) => {
-    if (results.length >= 20) return;
-    if (q.place.toLowerCase().includes(query)) {
-      results.push({ domain: 'earthquake', index: idx, name: `M${q.mag.toFixed(1)} ${q.place}`, extra: `Depth: ${q.depthKm} km` });
-    }
-  });
-
-  // 5. Cables
-  LANDING_STATIONS.forEach((st, idx) => {
-    if (results.length >= 20) return;
-    if (st.name.toLowerCase().includes(query) || st.country.toLowerCase().includes(query)) {
-      results.push({ domain: 'cable', index: idx, name: st.name, extra: `${st.country} (${st.cables.join(', ')})` });
-    }
-  });
-
-  // 6. Nuclear
-  NUCLEAR_PLANTS.forEach((p, idx) => {
-    if (results.length >= 20) return;
-    if (p.name.toLowerCase().includes(query) || p.country.toLowerCase().includes(query)) {
-      results.push({ domain: 'nuclear', index: idx, name: p.name, extra: `${p.capacityMwe} MWe (${p.country})` });
-    }
-  });
-
-  // 7. DSN
-  DSN_COMPLEXES.forEach((c, idx) => {
-    if (results.length >= 20) return;
-    if (c.name.toLowerCase().includes(query) || c.activeProbe.toLowerCase().includes(query)) {
-      results.push({ domain: 'dsn', index: idx, name: c.name, extra: `Tracking: ${c.activeProbe}` });
-    }
-  });
-
-  // 8. Asteroids
-  asteroidsScene.list.forEach((a, idx) => {
-    if (results.length >= 20) return;
-    if (a.name.toLowerCase().includes(query)) {
-      results.push({ domain: 'asteroid', index: idx, name: a.name, extra: `${a.missDistanceLd} LD (${a.hazardLevel})` });
-    }
-  });
-
-  // 9. Spaceports
-  launchesScene.list.forEach((sp, idx) => {
-    if (results.length >= 20) return;
-    if (sp.name.toLowerCase().includes(query) || sp.nextMission.toLowerCase().includes(query)) {
-      results.push({ domain: 'launch', index: idx, name: sp.name, extra: `${sp.nextRocket} - ${sp.nextMission}` });
-    }
-  });
-
-  // 10. Volcanoes
-  volcanoesScene.list.forEach((v, idx) => {
-    if (results.length >= 20) return;
-    if (v.name.toLowerCase().includes(query) || v.country.toLowerCase().includes(query)) {
-      results.push({ domain: 'volcano', index: idx, name: v.name, extra: `${v.alertLevel} - ${v.elevationM}m (${v.country})` });
-    }
-  });
-
-  // 11. Wildfires
-  wildfiresScene.list.forEach((f, idx) => {
-    if (results.length >= 20) return;
-    if (f.name.toLowerCase().includes(query) || f.region.toLowerCase().includes(query)) {
-      results.push({ domain: 'wildfire', index: idx, name: f.name, extra: `${f.frpMw} MW FRP (${f.country})` });
-    }
-  });
-
-  // 12. Cyclones
-  cyclonesScene.list.forEach((c, idx) => {
-    if (results.length >= 20) return;
-    if (c.name.toLowerCase().includes(query)) {
-      results.push({ domain: 'cyclone', index: idx, name: c.name, extra: `${c.categoryLabel} (${c.maxWindsKts} kts)` });
-    }
-  });
-
-  // 13. GPS Jamming
-  GPS_JAM_ZONES.forEach((z, idx) => {
-    if (results.length >= 20) return;
-    if (z.name.toLowerCase().includes(query) || z.region.toLowerCase().includes(query)) {
-      results.push({ domain: 'gpsjam', index: idx, name: z.name, extra: `${z.interferencePct}% Denial (${z.region})` });
-    }
-  });
+  for (const layer of layers) {
+    layer.search(query, push);
+  }
 
   commandUI.renderSearchResults(results);
 });
@@ -1119,17 +569,12 @@ function animate(now: number): void {
     scene.rotation.y = 0;
   }
 
-  // Update 3D Signal Layer Animations
+  // Update 3D Signal Layer Animations (registry-driven)
   earthSystem?.update(deltaWallSec);
-  earthquakeSystem.update(deltaWallSec);
-  cablesScene.update(now / 1000);
-  dsnScene.update(now / 1000);
   auroraScene.update(now / 1000);
-  launchesScene.update(now / 1000);
-  wildfiresScene.update(now / 1000);
-  volcanoesScene.update(now / 1000);
-  cyclonesScene.update(now / 1000);
-  gpsJamScene.update(now / 1000);
+  for (const layer of layers) {
+    layer.update?.(now / 1000);
+  }
 
   // Update OrbitControls & Target Tracking Reticle
   targetLock.update(deltaWallSec);
@@ -1137,41 +582,10 @@ function animate(now: number): void {
 
   // Keep telemetry panel synchronized with moving target
   if (currentSelectedTarget) {
-    if (currentSelectedTarget.domain === 'satellite' && selectedSatelliteIndex >= 0) {
-      satCloud.getDisplayPosition(selectedSatelliteIndex, tmpPos);
-      const altKm = satCloud.altKm[selectedSatelliteIndex] || 500;
-      const lat = satCloud.lat[selectedSatelliteIndex] || 0;
-      const lon = satCloud.lon[selectedSatelliteIndex] || 0;
-      const speedKmh = (satCloud.speedKms[selectedSatelliteIndex] || 7.5) * 3600;
-
-      currentSelectedTarget.lat = lat;
-      currentSelectedTarget.lon = lon;
-      currentSelectedTarget.altKm = altKm;
-      currentSelectedTarget.speedKmh = speedKmh;
-      currentSelectedTarget.scenePos = [tmpPos.x, tmpPos.y, tmpPos.z];
-
-      satOverlays.updateOrbit(satCloud.catalog[selectedSatelliteIndex], simDate);
-      satOverlays.updateFootprint(lat, lon, altKm);
-      satOverlays.updateMarker(tmpPos.x, tmpPos.y, tmpPos.z);
-    } else if (currentSelectedTarget.domain === 'flight' && selectedFlightIndex >= 0) {
-      const a = flightEngine.list[selectedFlightIndex];
-      if (a) {
-        currentSelectedTarget.lat = a.lat;
-        currentSelectedTarget.lon = a.lon;
-        currentSelectedTarget.altKm = a.altKm;
-        currentSelectedTarget.speedKmh = a.speedKmh;
-        currentSelectedTarget.heading = a.headingDeg;
-        currentSelectedTarget.scenePos = [a.x, a.y, a.z];
-      }
-    } else if (currentSelectedTarget.domain === 'marine' && selectedMarineIndex >= 0) {
-      const v = marineEngine.list[selectedMarineIndex];
-      if (v) {
-        currentSelectedTarget.lat = v.lat;
-        currentSelectedTarget.lon = v.lon;
-        currentSelectedTarget.speedKmh = v.speedKmh;
-        currentSelectedTarget.heading = v.headingDeg;
-        currentSelectedTarget.scenePos = [v.x, v.y, v.z];
-      }
+    const layer = layerById.get(currentSelectedTarget.domain);
+    const idx = selectedIndexByDomain.get(currentSelectedTarget.domain) ?? -1;
+    if (layer && idx >= 0) {
+      layer.refreshSelected?.(currentSelectedTarget, idx, simDate);
     }
     commandUI.showTarget(currentSelectedTarget);
   }
