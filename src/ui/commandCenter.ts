@@ -483,14 +483,32 @@ export class CommandCenterUI {
 
     let idx = 0;
     setInterval(() => {
+      // Real events (from live feeds) take priority over the curated samples.
+      const text = this.tickerQueue.length
+        ? this.tickerQueue.shift()!
+        : SAMPLE_EVENTS[idx];
       idx = (idx + 1) % SAMPLE_EVENTS.length;
-      if (this.tickerStream) {
-        this.tickerStream.style.opacity = '0';
-        setTimeout(() => {
-          this.tickerStream.textContent = SAMPLE_EVENTS[idx];
-          this.tickerStream.style.opacity = '1';
-        }, 300);
-      }
+      this.showTicker(text);
     }, 4000);
+  }
+
+  /** Show a real event in the ticker immediately (also queued for rotation). */
+  pushEvent(text: string): void {
+    this.tickerQueue.push(text);
+    this.showTicker(text);
+  }
+
+  private tickerQueue: string[] = [];
+  private lastTickerText = '';
+
+  private showTicker(text: string): void {
+    if (!this.tickerStream || text === this.lastTickerText) return;
+    this.lastTickerText = text;
+    this.tickerStream.style.opacity = '0';
+    setTimeout(() => {
+      if (!this.tickerStream) return;
+      this.tickerStream.textContent = text;
+      this.tickerStream.style.opacity = '1';
+    }, 300);
   }
 }

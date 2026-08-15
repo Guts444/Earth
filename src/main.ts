@@ -39,6 +39,13 @@ import { TacticalGrids } from './scene/grids';
 import { SelectionOverlays } from './scene/overlays';
 import { SatelliteCloud } from './scene/satellites';
 import { TargetLockController } from './scene/targetLock';
+import { fetchLiveCyclones, setLiveCyclones } from './geo/cyclones';
+import {
+  applyUpcomingLaunches,
+  fetchUpcomingLaunches,
+  formatTMinus,
+} from './space/launches';
+import { gScaleForKp, kpToAuroraBrightness, refreshSpaceWeather } from './space/spaceWeather';
 import { loadCatalog } from './tle/catalog';
 import { CommandCenterUI, type OverlayType } from './ui/commandCenter';
 
@@ -499,6 +506,61 @@ async function pollQuakes(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Live Feeds: Space Weather, Cyclones, Launches
+// ---------------------------------------------------------------------------
+
+async function pollSpaceWeather(): Promise<void> {
+  const kp = await refreshSpaceWeather();
+  const valEl = document.querySelector<HTMLElement>('#space-weather-val');
+  if (kp !== null && valEl) {
+    valEl.textContent = `Kp ${kp.toFixed(1)} (${gScaleForKp(kp).split(' ')[0]})`;
+  }
+  if (kp !== null && auroraScene) {
+    auroraScene.setBrightness(kpToAuroraBrightness(kp));
+    if (kp >= 5) {
+      commandUI.pushEvent(`NOAA SWPC: Geomagnetic storm in progress — Kp ${kp.toFixed(1)} (${gScaleForKp(kp)})`);
+    }
+  }
+}
+
+let lastCycloneCount = 0;
+async function pollCyclones(): Promise<void> {
+  try {
+    const records = await fetchLiveCyclones();
+    setLiveCyclones(records);
+    cyclonesScene.setStorms(records);
+    if (records.length !== lastCycloneCount) {
+      lastCycloneCount = records.length;
+      const summary = records
+        .map((s) => `${s.name} (${s.maxWindsKts} kts)`)
+        .join(', ');
+      commandUI.pushEvent(
+        `NOAA NHC: ${records.length} active tropical cyclone${records.length > 1 ? 's' : ''} — ${summary}`,
+      );
+    }
+  } catch {
+    // static cyclone list stays as fallback
+  }
+}
+
+let lastLaunchEventMs = 0;
+async function pollLaunches(): Promise<void> {
+  try {
+    const launches = await fetchUpcomingLaunches();
+    applyUpcomingLaunches(launches);
+    const next = launches.find((l) => l.netMs > Date.now());
+    if (next && next.netMs - lastLaunchEventMs > 5 * 60 * 1000) {
+      lastLaunchEventMs = next.netMs;
+      commandUI.pushEvent(
+        `Next launch: ${next.name} from ${next.padName} — ${formatTMinus(next.netMs)}`,
+      );
+    }
+  } catch {
+    // static pad data stays
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main Animation & Simulation Loop
 // ---------------------------------------------------------------------------
 
@@ -632,6 +694,14 @@ async function init(): Promise<void> {
   loadSatellites().catch((e) => console.warn('Satellite loader warning:', e));
   pollFlights().catch((e) => console.warn('Flight poller warning:', e));
   pollQuakes().catch((e) => console.warn('Quake poller warning:', e));
+
+  // Live feeds (once at boot, then on 15-30 min cadence)
+  pollSpaceWeather().catch(() => {});
+  pollCyclones().catch(() => {});
+  pollLaunches().catch(() => {});
+  setInterval(() => pollSpaceWeather().catch(() => {}), 15 * 60 * 1000);
+  setInterval(() => pollCyclones().catch(() => {}), 30 * 60 * 1000);
+  setInterval(() => pollLaunches().catch(() => {}), 30 * 60 * 1000);
 }
 
 init();

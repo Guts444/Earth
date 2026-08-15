@@ -29,6 +29,7 @@ import type { CyclonesScene } from '../geo/cyclonesScene';
 import type { GpsJamScene } from '../tactical/gpsJamScene';
 import type { SatelliteCloud } from '../scene/satellites';
 import type { SelectionOverlays } from '../scene/overlays';
+import { formatTMinus } from '../space/launches';
 
 export interface SearchResult {
   domain: DomainType;
@@ -460,6 +461,16 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
     buildTarget(index) {
       if (index < 0 || index >= d.launchesScene.list.length) return null;
       const sp = d.launchesScene.list[index];
+      const extra: Record<string, string | number> = {
+        'Next Mission': sp.nextMission,
+        'Rocket Vehicle': sp.nextRocket,
+        'Target Orbit': sp.targetOrbit,
+        'Launch Azimuth': `${sp.launchAzimuthDeg}° True`,
+      };
+      if (sp.nextLaunchAtMs) {
+        extra['T-Minus'] = formatTMinus(sp.nextLaunchAtMs);
+        extra['Data Source'] = 'Live (Launch Library 2)';
+      }
       return {
         domain: 'launch',
         id: `PAD-${sp.id.toUpperCase()}`,
@@ -471,14 +482,15 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
         speedKmh: 0,
         country: sp.country,
         operator: sp.operator,
-        extra: {
-          'Next Mission': sp.nextMission,
-          'Rocket Vehicle': sp.nextRocket,
-          'Target Orbit': sp.targetOrbit,
-          'Launch Azimuth': `${sp.launchAzimuthDeg}° True`,
-        },
+        extra,
         scenePos: [sp.x, sp.y, sp.z],
       };
+    },
+    refreshSelected(target, index) {
+      const sp = d.launchesScene.list[index];
+      if (sp?.nextLaunchAtMs && target.extra) {
+        target.extra['T-Minus'] = formatTMinus(sp.nextLaunchAtMs);
+      }
     },
     search(query, push) {
       d.launchesScene.list.forEach((sp, idx) => {

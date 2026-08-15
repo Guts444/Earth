@@ -81,6 +81,20 @@ export class CyclonesScene {
     return CYCLONES;
   }
 
+  /** Replace the storm point cloud (live NHC ingestion). */
+  setStorms(records: CycloneRecord[]): void {
+    const positions: number[] = [];
+    const cats: number[] = [];
+    for (const c of records) {
+      positions.push(c.x, c.y, c.z);
+      cats.push(c.category);
+    }
+    const geo = this.points.geometry as THREE.BufferGeometry;
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('aCat', new THREE.Float32BufferAttribute(cats, 1));
+    geo.computeBoundingSphere();
+  }
+
   setVisible(visible: boolean): void {
     this.isVisible = visible;
     this.points.visible = visible;

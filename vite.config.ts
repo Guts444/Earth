@@ -237,8 +237,49 @@ function commandCenterProxyPlugin(): Plugin {
       }
     }
 
+    // 4. NOAA NHC active storms (no CORS upstream — proxy only)
+    if (requestUrl.pathname === '/api/nhc/current-storms') {
+      const NHC_CACHE_FILE = path.resolve(__dirname, '.cache/nhc.json');
+      try {
+        try {
+          const [raw, info] = await Promise.all([
+            readFile(NHC_CACHE_FILE, 'utf8'),
+            stat(NHC_CACHE_FILE),
+          ]);
+          if (Date.now() - info.mtimeMs < 15 * 60 * 1000) {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(raw);
+            return;
+          }
+        } catch {
+          // no fresh cache
+        }
+
+        const upstream = await fetch('https://www.nhc.noaa.gov/CurrentStorms.json', {
+          headers: { 'User-Agent': 'Earth-Orbit-local/1.0' },
+        });
+        if (upstream.ok) {
+          const jsonText = await upstream.text();
+          await mkdir(path.dirname(NHC_CACHE_FILE), { recursive: true });
+          await writeFile(NHC_CACHE_FILE, jsonText, 'utf8');
+          res.setHeader('Content-Type', 'application/json');
+          res.end(jsonText);
+          return;
+        }
+
+        const stale = await readFile(NHC_CACHE_FILE, 'utf8');
+        res.setHeader('Content-Type', 'application/json');
+        res.end(stale);
+        return;
+      } catch {
+        res.statusCode = 502;
+        res.end(JSON.stringify({ activeStorms: [] }));
+        return;
+      }
+    }
+
     next();
-  };
+    };
 
   return {
     name: 'command-center-proxy',

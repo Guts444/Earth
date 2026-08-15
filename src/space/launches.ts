@@ -12,6 +12,8 @@ export interface SpaceportRecord {
   targetOrbit: string;
   launchAzimuthDeg: number;
   countdownSec: number;
+  /** Real T-0 (ms epoch) when a live launch is matched to this pad. */
+  nextLaunchAtMs?: number;
   x: number;
   y: number;
   z: number;
@@ -166,4 +168,100 @@ for (const sp of SPACEPORTS) {
   sp.x = x;
   sp.y = y;
   sp.z = z;
+}
+
+// ---------------------------------------------------------------------------
+// Live ingestion — The Space Devs Launch Library 2 (upcoming launches).
+// Matches each upcoming launch to the nearest static pad (<= 500 km) and
+// stamps real mission / rocket / orbit / T-0 onto it. Unmatched pads keep
+// their curated data.
+// ---------------------------------------------------------------------------
+
+export interface UpcomingLaunch {
+  name: string;
+  mission: string;
+  rocket: string;
+  orbit: string;
+  netMs: number;
+  lat: number;
+  lon: number;
+  padName: string;
+  statusName: string;
+}
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+export async function fetchUpcomingLaunches(): Promise<UpcomingLaunch[]> {
+  const res = await fetch('https://ll.thespacedevs.com/2.2.0/launch/upcoming/?limit=15');
+  if (!res.ok) throw new Error(`Launch Library 2: HTTP ${res.status}`);
+  const data = await res.json();
+  const out: UpcomingLaunch[] = [];
+  for (const r of data?.results ?? []) {
+    if (typeof r !== 'object' || !r) continue;
+    const pad = r.pad;
+    if (typeof pad !== 'object' || !pad) continue;
+    const lat = Number(pad.latitude);
+    const lon = Number(pad.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const netMs = Date.parse(r.net ?? '');
+    if (Number.isNaN(netMs)) continue;
+    const mission = typeof r.mission === 'object' && r.mission ? r.mission : {};
+    out.push({
+      name: String(r.name ?? ''),
+      mission: String(mission.name ?? ''),
+      rocket: String(((r.rocket ?? {}).configuration ?? {}).name ?? ''),
+      orbit: String((mission.orbit ?? {}).name ?? ''),
+      netMs,
+      lat,
+      lon,
+      padName: String(pad.name ?? ''),
+      statusName: String((r.status ?? {}).name ?? ''),
+    });
+  }
+  out.sort((a, b) => a.netMs - b.netMs);
+  return out;
+}
+
+/** Stamp the earliest future launch within 500 km onto each static pad. */
+export function applyUpcomingLaunches(launches: UpcomingLaunch[]): void {
+  const now = Date.now();
+  for (const sp of SPACEPORTS) {
+    let best: UpcomingLaunch | null = null;
+    let bestDistKm = 500;
+    for (const l of launches) {
+      if (l.netMs <= now) continue;
+      const d = haversineKm(sp.lat, sp.lon, l.lat, l.lon);
+      if (d < bestDistKm) {
+        bestDistKm = d;
+        best = l;
+      }
+    }
+    if (!best) continue;
+    sp.nextMission = best.mission || best.name || sp.nextMission;
+    sp.nextRocket = best.rocket || sp.nextRocket;
+    const orbit = best.orbit && best.orbit !== 'Unknown' ? best.orbit : 'Orbit TBD';
+    sp.targetOrbit = /orbit$/i.test(orbit) ? orbit : `${orbit} Orbit`;
+    sp.nextLaunchAtMs = best.netMs;
+  }
+}
+
+/** Human countdown from a T-0 timestamp. */
+export function formatTMinus(netMs: number, nowMs = Date.now()): string {
+  const msLeft = netMs - nowMs;
+  if (msLeft <= 0) return 'LIFTOFF';
+  const s = Math.floor(msLeft / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `T-${d}d ${h}h ${m}m`;
+  if (h > 0) return `T-${h}h ${m}m`;
+  return `T-${m}m ${s % 60}s`;
 }

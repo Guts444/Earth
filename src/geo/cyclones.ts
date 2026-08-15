@@ -125,3 +125,100 @@ for (const c of CYCLONES) {
   c.y = y;
   c.z = z;
 }
+
+// ---------------------------------------------------------------------------
+// Live ingestion — NOAA NHC active storms (Atlantic / E. & C. Pacific).
+// Replaces the curated snapshot when the feed has storms; callers keep the
+// static list as fallback when the feed is unreachable or empty.
+// ---------------------------------------------------------------------------
+
+const NHC_BASE = '/api/nhc/current-storms';
+
+interface NhcStorm {
+  id?: string;
+  name?: string;
+  classification?: string;
+  intensity?: string; // kts
+  pressure?: string; // mb
+  latitudeNumeric?: number;
+  longitudeNumeric?: number;
+  movementDir?: number; // degrees
+  movementSpeed?: number; // kts
+}
+
+function saffirSimpson(kts: number): { category: number; categoryLabel: string } {
+  if (kts < 34) return { category: 0, categoryLabel: 'Tropical Depression' };
+  if (kts < 64) return { category: 0, categoryLabel: 'Tropical Storm' };
+  if (kts < 83) return { category: 1, categoryLabel: 'Category 1 Hurricane' };
+  if (kts < 96) return { category: 2, categoryLabel: 'Category 2 Hurricane' };
+  if (kts < 113) return { category: 3, categoryLabel: 'Category 3 Major Hurricane' };
+  if (kts < 137) return { category: 4, categoryLabel: 'Category 4 Major Hurricane' };
+  return { category: 5, categoryLabel: 'Category 5 Hurricane' };
+}
+
+function basinForId(id: string): string {
+  const code = (id || '').slice(0, 2).toLowerCase();
+  if (code === 'al') return 'North Atlantic Ocean';
+  if (code === 'ep') return 'Eastern North Pacific';
+  if (code === 'cp') return 'Central North Pacific';
+  return 'Tropical Basin';
+}
+
+/** Build scene-ready records from NHC CurrentStorms.json. */
+export function mapNhcStorms(raw: { activeStorms?: NhcStorm[] } | null): CycloneRecord[] {
+  const storms = raw?.activeStorms;
+  if (!Array.isArray(storms) || storms.length === 0) return [];
+
+  return storms
+    .filter((s) => {
+      const lat = Number(s.latitudeNumeric);
+      const lon = Number(s.longitudeNumeric);
+      return Number.isFinite(lat) && Number.isFinite(lon);
+    })
+    .map((s) => {
+      const kts = Number(s.intensity);
+      const winds = Number.isFinite(kts) && kts > 0 ? kts : 30;
+      const { category, categoryLabel } = saffirSimpson(winds);
+      const moveKts = Number(s.movementSpeed);
+      const movementSpeedKmh = Number.isFinite(moveKts) ? moveKts * 1.852 : 0;
+      const moveDeg = Number(s.movementDir);
+      const name = s.name || 'UNNAMED';
+      const id = (s.id || name).toLowerCase().replace(/[^a-z0-9]/g, '');
+      const rec: CycloneRecord = {
+        id,
+        name: `${s.classification === 'HU' ? 'Hurricane' : s.classification === 'TS' ? 'Tropical Storm' : 'Tropical Depression'} ${name.toUpperCase()}`,
+        basin: basinForId(s.id || ''),
+        category,
+        categoryLabel,
+        maxWindsKts: winds,
+        maxWindsKmh: Math.round(winds * 1.852),
+        pressureHpa: Number(s.pressure) || 0,
+        movementDirDeg: Number.isFinite(moveDeg) ? moveDeg : 0,
+        movementSpeedKmh,
+        lat: Number(s.latitudeNumeric),
+        lon: Number(s.longitudeNumeric),
+        x: 0,
+        y: 0,
+        z: 0,
+      };
+      const [x, y, z] = geoToSceneSurface(rec.lat, rec.lon);
+      rec.x = x;
+      rec.y = y;
+      rec.z = z;
+      return rec;
+    });
+}
+
+/** Replace the displayed cyclone list (scene rebuilds via setStorms). */
+export function setLiveCyclones(records: CycloneRecord[]): void {
+  CYCLONES.length = 0;
+  CYCLONES.push(...records);
+}
+
+export async function fetchLiveCyclones(): Promise<CycloneRecord[]> {
+  const res = await fetch(NHC_BASE);
+  if (!res.ok) throw new Error(`NHC: HTTP ${res.status}`);
+  const records = mapNhcStorms(await res.json());
+  if (records.length === 0) throw new Error('NHC: no active storms');
+  return records;
+}
