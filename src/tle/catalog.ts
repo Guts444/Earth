@@ -8,6 +8,14 @@ import {
   type SatGroupId,
 } from '../config';
 
+/**
+ * TLE snapshots committed by CI to the orphan `tle-data` branch of
+ * Guts444/Earth and served via raw.githubusercontent.com (CORS-open) —
+ * used as the satellite source on static hosting without the dev proxy.
+ */
+export const TLE_DATA_BRANCH_BASE =
+  'https://raw.githubusercontent.com/Guts444/Earth/tle-data';
+
 export interface CatalogSatellite {
   name: string;
   noradId: string;
@@ -51,15 +59,49 @@ async function fetchGroupTle(groupId: SatGroupId): Promise<string> {
   const cached = readCache(groupId);
   if (cached) return cached;
 
-  const url = `${CELESTRAK_BASE}?GROUP=${encodeURIComponent(groupId)}&FORMAT=tle`;
-  const res = await fetch(url);
+  // 1) Dev/preview proxy (cached + mirrored server-side)
+  let res = await fetch(`${CELESTRAK_BASE}?GROUP=${encodeURIComponent(groupId)}&FORMAT=tle`);
+  if (res.ok && !(res.headers.get('content-type') ?? '').includes('text/html')) {
+    const text = await res.text();
+    if (isTleText(text)) return cacheText(groupId, text);
+  }
+
+  // 2) Static hosting: TLE snapshot committed by CI to the orphan tle-data
+  //    branch, served via raw.githubusercontent.com (CORS-open).
+  const tleDataUrl = `${TLE_DATA_BRANCH_BASE}/${groupId}.tle`;
+  res = await fetch(tleDataUrl);
+  if (res.ok) {
+    const text = await res.text();
+    if (isTleText(text)) return cacheText(groupId, text);
+  }
+
+  // 3) Direct CelesTrak (CORS-open, but IP-throttled for heavy users).
+  //    Fail fast so a stall can't freeze the catalog load.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 25000);
+  try {
+    res = await fetch(
+      `https://celestrak.org/NORAD/elements/gp.php?GROUP=${encodeURIComponent(groupId)}&FORMAT=tle`,
+      { signal: ctrl.signal },
+    );
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     throw new Error(`CelesTrak ${groupId}: HTTP ${res.status}`);
   }
   const text = await res.text();
-  if (!text.trim() || text.includes('<html')) {
+  if (!isTleText(text)) {
     throw new Error(`CelesTrak ${groupId}: unexpected response`);
   }
+  return cacheText(groupId, text);
+}
+
+function isTleText(text: string): boolean {
+  return text.trim().length > 0 && !text.includes('<html');
+}
+
+function cacheText(groupId: string, text: string): string {
   writeCache(groupId, text);
   return text;
 }

@@ -14,6 +14,8 @@ A high-performance, real-time 3D planetary intelligence platform and tactical op
 
 ## 🛰️ Monitored Signal Domains
 
+> **Live vs. curated:** satellites (CelesTrak), aviation (OpenSky), earthquakes (USGS), tropical cyclones (NOAA NHC), aurora/space weather (NOAA SWPC), and launch schedules (Launch Library 2) ingest live feeds. Wildfires, volcanoes, DSN, asteroids, marine traffic, infrastructure, and EW zones are curated datasets with real-data provenance rendered with animated shaders.
+
 ### 1. Orbital Mechanics & Satellite Constellations
 - **Live CelesTrak Integration**: Propagates 11,000+ active satellites across Starlink, OneWeb, GPS/GLONASS/Galileo/BeiDou constellations, ISS, and scientific payloads.
 - **Client-Side SGP4 Engine**: Continuous local orbit propagation using [`satellite.js`](https://github.com/shashwatak/satellite-js) with sub-frame velocity extrapolation.
@@ -86,9 +88,17 @@ Open `http://localhost:5173/` in your browser.
 
 | Command | Description |
 |---|---|
-| `npm run dev` | Launch Vite dev server with CelesTrak, OpenSky, and USGS proxy plugins |
+| `npm run dev` | Launch Vite dev server with CelesTrak, OpenSky, USGS, and NHC proxy plugins |
 | `npm run build` | Run TypeScript compiler typechecks and generate optimized production bundle |
 | `npm run preview` | Serve the production build locally with proxy endpoints enabled |
+
+## 🌍 Live Deployment
+
+The app deploys to **GitHub Pages** automatically via `.github/workflows/deploy.yml` (push to `main`). Live feeds with CORS-open upstreams (CelesTrak, USGS) fall back to direct fetches on static hosting; OpenSky (rate-limited, no CORS) and NHC (no CORS) degrade to their simulated/curated fallbacks.
+
+1. Make sure the repository is **public** (GitHub Pages is not available for private repos on the free plan).
+2. Repo Settings → Pages → **Source: GitHub Actions**.
+3. Push to `main` — the workflow builds and deploys `dist/`.
 
 ---
 

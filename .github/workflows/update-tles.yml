@@ -1,0 +1,49 @@
+name: Refresh TLE data
+
+# Keeps the orphan `tle-data` branch topped up with fresh CelesTrak TLEs so
+# the static GitHub Pages build can load the satellite catalog without the
+# dev proxy. The branch is force-pushed (single-commit history, no bloat).
+#
+# Groups are fetched server-side with a friendly UA because CelesTrak
+# throttles browser-origin requests.
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch TLE groups
+        run: |
+          mkdir -p tle-data
+          for g in starlink oneweb stations gps-ops; do
+            echo "Fetching $g…"
+            curl -sS --fail --max-time 120 -A "Earth-Command-CI/1.0 (tle-refresh)" \
+              "https://celestrak.org/NORAD/elements/gp.php?GROUP=$g&FORMAT=tle" \
+              -o "tle-data/$g.tle" && echo "  ok: $(wc -c < tle-data/$g.tle) bytes" \
+              || echo "  FAILED: keeping previous snapshot"
+          done
+          # Drop files that failed so we never serve stale-as-missing
+          find tle-data -name '*.tle' -size 0 -delete
+
+      - name: Rebuild orphan branch and force-push
+        run: |
+          git checkout --orphan tle-data
+          git rm -rf --cached . >/dev/null 2>&1 || true
+          git add tle-data
+          if git diff --cached --quiet; then
+            echo "No TLE changes — skipping push"
+            exit 0
+          fi
+          git -c user.name="Earth Command CI" \
+              -c user.email="actions@users.noreply.github.com" \
+              commit -m "chore: refresh TLE catalog $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push --force origin HEAD:tle-data

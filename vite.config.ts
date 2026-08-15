@@ -293,6 +293,9 @@ function commandCenterProxyPlugin(): Plugin {
 }
 
 export default defineConfig({
+  // Relative base so the built app works from any subpath (GitHub Pages
+  // serves the repo under /Earth/, local file://, or a CDN).
+  base: './',
   plugins: [commandCenterProxyPlugin()],
   server: {
     host: '0.0.0.0',
