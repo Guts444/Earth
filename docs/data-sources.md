@@ -72,7 +72,8 @@ Natural Earth **v5.1.2** GeoJSON (`nvkelso/natural-earth-vector`):
 Pipeline: download (cached in `.geo-cache/`, git-ignored) → simplify
 (Douglas–Peucker) → snap/quantize to integer coordinate grids → verify
 (every city checked against its country polygon; dateline-crossing segments
-rejected) → emit `public/data/geo-context.json` (~1.4 MB, ~380 KB gzipped)
+rejected) → emit `public/data/geo-context.json` (~1.41 MB raw, ~391 KB
+gzipped)
 plus `scripts/data/geo-verify-countries.json` (coarse polygons for
 `npm run verify:geo`, which re-checks city placement and the projection
 convention offline).
