@@ -15,6 +15,7 @@ import {
 
 export type OverlayType =
   | 'clouds'
+  | 'geocontext'
   | 'grid'
   | 'terminator'
   | 'orbits'
@@ -193,6 +194,7 @@ export class CommandCenterUI {
     // 4. All Overlays and Signal Layers
     const overlayInputs: Array<{ id: string; key: OverlayType }> = [
       { id: 'toggle-clouds', key: 'clouds' },
+      { id: 'toggle-geocontext', key: 'geocontext' },
       { id: 'toggle-grid', key: 'grid' },
       { id: 'toggle-terminator', key: 'terminator' },
       { id: 'toggle-orbits', key: 'orbits' },

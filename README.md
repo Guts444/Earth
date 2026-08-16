@@ -55,6 +55,12 @@ A high-performance, real-time 3D planetary intelligence platform and tactical op
 ### 7. Tactical & Electronic Warfare
 - **GPS Jamming / GNSS Denial Zones**: Active electronic warfare and navigation spoofing corridors (Baltic Sea, Black Sea, Eastern Mediterranean, Red Sea, Strait of Hormuz, Korean DMZ) with degradation percentage and tactical radar sweep shaders.
 
+### 8. Cartographic Context (Multiscale GIS Base Layer)
+- **Natural Earth geography** (`Geographic Context` in the Layers tab, ON by default): country borders, first-level administrative boundaries (US states, Brazilian states, Canadian provinces, German Länder, Indian states, Japanese prefectures, … across 51 countries), country/state names, and 1,251 major cities — built offline from Natural Earth v5.1.2 (public domain) into a ~640 KB bundled dataset (`npm run build:geo`).
+- **Distance-driven LOD**: at the global view only major country names and faint borders; zooming in reveals more country names and major cities, then state/province borders and labels, then the full hierarchy — all ramping smoothly against the same 3.0–3.8-radii transition that fades the clouds and lifts the night side.
+- **Clean rendering**: batched line geometry (one material per layer — no per-country objects), labels on a dedicated canvas with priority + collision decluttering, far-side labels hidden by horizon occlusion, and no label ever bleeds past the Earth silhouette.
+- Verified by `npm run verify:geo` (city-in-country checks for representative world cities, dateline safety, projection convention pins).
+
 ---
 
 ## 🎮 Command & Control HUD
@@ -101,6 +107,9 @@ Open `http://localhost:5173/` in your browser.
 | `npm run dev` | Launch Vite dev server with CelesTrak, OpenSky, USGS, and NHC proxy plugins |
 | `npm run build` | Run TypeScript compiler typechecks and generate optimized production bundle |
 | `npm run preview` | Serve the production build locally with proxy endpoints enabled |
+| `npm run build:geo` | Rebuild `public/data/geo-context.json` (borders/labels/cities) from Natural Earth |
+| `npm run verify:geo` | Verify the geographic dataset: city/country placement, dateline safety, projection convention |
+| `npm run verify:clouds` | Verify the VIIRS cloud pipeline (colormap decode, gap fill, coverage gates) |
 
 ## 🌍 Live Deployment
 
@@ -129,4 +138,4 @@ The submarine-cable dataset is refreshed **weekly** by `.github/workflows/update
 
 ## 📄 License
 
-MIT License — Orbital TLEs via CelesTrak, seismic feeds via USGS, aviation vectors via OpenSky Network, space data via NASA/JPL/NOAA.
+MIT License — Orbital TLEs via CelesTrak, seismic feeds via USGS, aviation vectors via OpenSky Network, space data via NASA/JPL/NOAA, cartographic data via Natural Earth (public domain).

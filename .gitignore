@@ -18,6 +18,7 @@ dist-ssr
 test-browser.js
 /test_shot.png
 /screenshot_test.png
+.geo-cache/
 
 # Editor directories and files
 .vscode/*

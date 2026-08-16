@@ -41,6 +41,7 @@ import { TacticalGrids } from './scene/grids';
 import { SelectionOverlays } from './scene/overlays';
 import { SatelliteCloud } from './scene/satellites';
 import { TargetLockController } from './scene/targetLock';
+import { GeographicContextScene } from './geo/context/geographicScene';
 import type { PickHit } from './domains/pick';
 import { fetchLiveCyclones, setLiveCyclones } from './geo/cyclones';
 import { loadCableData } from './infra/cables';
@@ -160,6 +161,24 @@ cyclonesScene.setVisible(true);
 const gpsJamScene = new GpsJamScene();
 scene.add(gpsJamScene.points);
 gpsJamScene.setVisible(true);
+
+// Geographic context (borders + labels) — bundled Natural Earth dataset;
+// loads in the background like the cloud layer (never blocks the Earth).
+const geoContext = new GeographicContextScene(document.body);
+scene.add(geoContext.group);
+
+// Minimal debug handle for the browser-verification harness (state inspection
+// only — camera, scene, geo context). No credentials, no mutation APIs.
+(window as unknown as Record<string, unknown>).__earthDebug = {
+  scene,
+  camera,
+  geoContext,
+  get earth() { return earthSystem; },
+  /** Fly the camera to a lat/lon (verification harness only). */
+  get flyTo() {
+    return (lat: number, lon: number, alt: number) => targetLock.flyToCoord(lat, lon, alt, 1.2);
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Domain Registry — selection, picking, search, toggles, animation ticks
@@ -416,6 +435,8 @@ const commandUI = new CommandCenterUI({
   onOverlayToggle(overlay: OverlayType, checked: boolean) {
     if (overlay === 'clouds' && earthSystem) {
       earthSystem.setCloudsVisible(checked);
+    } else if (overlay === 'geocontext') {
+      geoContext.setVisible(checked);
     } else if (overlay === 'grid') {
       tacticalGrids.setGridVisible(checked);
     } else if (overlay === 'terminator') {
@@ -754,6 +775,10 @@ function animate(now: number): void {
   targetLock.update(deltaWallSec);
   controls.update();
 
+  // Geographic context LOD (border opacities + label layout/decluttering).
+  // scene.rotation.y carries the auto-rotate drift for this frame.
+  geoContext.update(camera, scene.rotation.y);
+
   // Automatic global -> detail blend from camera distance (clouds fade out,
   // night side lifts to full daylight as the camera approaches the surface).
   // Time simulation and the solar vector are untouched.
@@ -794,6 +819,7 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  geoContext.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio);
 });
 
 // ---------------------------------------------------------------------------
@@ -801,6 +827,18 @@ window.addEventListener('resize', () => {
 // ---------------------------------------------------------------------------
 
 async function init(): Promise<void> {
+  geoContext.resize(window.innerWidth, window.innerHeight, window.devicePixelRatio);
+  geoContext.ready.then((ok) => {
+    setFeed(
+      'geocontext',
+      'Geography',
+      ok ? 'static' : 'off',
+      ok
+        ? `Natural Earth 50m · ${geoContext.stats.countries} countries · ${geoContext.stats.cities} cities · ${geoContext.stats.admin1} admin-1 regions`
+        : 'bundled geo dataset unavailable — borders/labels disabled',
+    );
+  });
+
   try {
     earthSystem = await createEarth(renderer);
     scene.add(earthSystem.group);

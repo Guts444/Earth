@@ -16,9 +16,11 @@
 | `src/domains/registry.ts` | `DomainAdapter` interface + `createDomainLayers()` factory — one adapter per domain; main.ts drives everything generically |
 | `src/domains/pick.ts` | Shared **screen-space picking** helper (`pickPointsNearestCursor`) |
 | `src/scene/` | `earth.ts` (planet + atmosphere + cloud overlay wiring), `clouds.ts` (NASA GIBS VIIRS cloud mask → dedicated cloud sphere), `cloudColormap.json` (official GIBS colormap for decoding), `satellites.ts` (11k-point cloud + SGP4 buffers), `overlays.ts` (orbits/footprints/markers), `grids.ts` (terminator/grids), `targetLock.ts` (fly-to/chase/reticle) |
+| `src/geo/` | `projection.ts` (**the single lat/lon → scene convention**, ECEF → X→X/Z→Y/Y→−Z), `earthquakes.ts` (USGS), `cyclones.ts` (NHC), `volcanoes.ts` + scene, `wildfires.ts` + scene, `context/` (geographic base layer — see below) |
 | `src/tle/catalog.ts` | TLE fetch chain: localStorage → dev proxy → `tle-data` branch → direct CelesTrak |
 | `src/orbit/propagator.ts` | Batched SGP4 propagation (500ms cadence) |
 | `src/space/` | `dsn.ts` + scene, `launches.ts` + scene (Launch Library 2), `asteroids.ts` + scene, `spaceWeather.ts` (SWPC Kp), `auroraScene.ts` |
+| `src/geo/context/` | **Geographic context subsystem**: `data.ts` (bundled Natural Earth dataset model + loader), `boundaries.ts` (batched country/admin-1 lines), `labels.ts` (2D-canvas label renderer with priority + collision + horizon clipping), `lod.ts` (distance policy), `geographicScene.ts` (facade — `update(camera)`, `setVisible`) |
 | `src/geo/` | `earthquakes.ts` (USGS), `cyclones.ts` (NHC), `volcanoes.ts` + scene, `wildfires.ts` + scene |
 | `src/infra/` | `cables.ts` (TeleGeography dataset loader + curated fallback), `cablesScene.ts`, `nuclear.ts` + scene |
 | `src/flight/` | `engine.ts` (OpenSky chain + simulated fleet), `aircraftScene.ts` |
@@ -28,6 +30,58 @@
 | `public/data/cables.json` | Full TeleGeography cable dataset (702 systems / 1,922 stations) |
 | `scripts/build-cables-data.py` | Builds the cable dataset from TeleGeography's public JSON endpoints |
 | `.github/workflows/` | `deploy.yml`, `update-tles.yml` (6h), `update-live-feeds.yml` (20 min), `update-cables.yml` (weekly) |
+
+## Geographic context — the cartographic base layer
+
+`src/geo/context/` adds country borders, admin-1 (state/province) boundaries,
+and country/admin-1/city labels on top of the globe. It is NOT a domain
+adapter — it is pure cartographic context (no picking, no search) with a
+three-line surface in main.ts:
+
+```ts
+const geoContext = new GeographicContextScene(document.body); // group + label canvas
+scene.add(geoContext.group);
+geoContext.update(camera, scene.rotation.y); // per-frame, dirty-checked
+```
+
+- **Data** (`public/data/geo-context.json`, ~640 KB, gzipped ~200 KB) is built
+  offline from **Natural Earth v5.1.2** (public domain) by
+  `scripts/build-geo-data.mjs` (`npm run build:geo`) — 50m countries +
+  boundary lines, 50m/10m admin-1 for 51 countries, 50m populated places
+  (1,251 cities). Admin-1 boundaries are DERIVED from polygon adjacencies
+  (a ring edge shared by 2+ units of the same country is internal — coasts
+  and country borders are dropped), which is what keeps the file small.
+  Regenerate only when Natural Earth updates; runtime loads the bundled file
+  once (`data.ts`) — no polling.
+- **Rendering**: country and admin-1 borders are ONE `LineSegments` batch +
+  ONE shared material each (radius offsets 1.0015 / 1.0022 above the surface
+  → no z-fighting; depth-tested → far side occluded). Labels render on a
+  single 2D canvas between the WebGL canvas and the HUD panels
+  (pointer-events none): stable screen-space size, no DOM churn, no framework.
+  Label layout is dirty-checked on camera position/rotation/distance and
+  costs ~1 ms worst case; idle frames cost nothing.
+- **LOD** (`lod.ts`, thresholds in earth radii, tuned against the 3.0–3.8
+  global→detail blend): d ≥ 3.55 = major country names (NE LABELRANK ≤ 2,
+  always on) + faint country borders; 3.55→2.55 = stronger borders, more
+  country names, major cities; 2.55→1.8 = admin-1 borders + labels fade in,
+  more cities; d < 1.8 = full hierarchy. All gates ramp smoothly — nothing
+  pops.
+- **Occlusion**: labels pass a forward-hemisphere test, must project inside
+  the globe's screen disc, fade near the limb, and the canvas is clipped to
+  the disc — labels never leak past the Earth silhouette.
+- **Decluttering**: greedy placement in priority order
+  (countries → national capitals → admin-1 → other cities) with exact
+  AABB collision; city labels retry right/left/below/above the dot;
+  density caps per kind per zoom band.
+- **Projection**: `src/geo/projection.ts` (`geoToScene`) is THE lat/lon →
+  scene convention (ECEF → X→X, Z→Y, Y→−Z) — now shared by the flight engine
+  and the geo context. `scripts/verify-geo.mjs` (`npm run verify:geo`) pins
+  the convention and verifies every shipped city against its country polygon
+  (representative cities: New York, London, Tokyo, Sydney, São Paulo,
+  Cape Town) offline.
+- **UI**: Layers tab → "Geographic Context (Borders & Labels)" master toggle
+  (default ON; OFF hides borders + labels, ON resumes automatic LOD). The
+  DATA FEEDS strip adds a Geography chip (STATIC · Natural Earth 50m).
 
 ## The domain registry pattern (add a domain = one adapter)
 
@@ -109,15 +163,18 @@ only when status/detail actually change (dirty-check in commandCenter).
 | `update-tles.yml` | every 6h | fetch 12 TLE groups → force-push `tle-data` branch |
 | `update-live-feeds.yml` | every 20 min | OpenSky states + NHC storms → force-push `live-data` branch |
 | `update-cables.yml` | Monday 03:23 UTC | rebuild `data/cables.json` → push to `main` (triggers deploy) |
+| (none — manual) | on demand | `npm run build:geo` regenerates `public/data/geo-context.json` from Natural Earth (commit the file; no cron needed — the dataset changes rarely) |
 
 All crons run on GitHub's servers — Igor's PC can be off. Manual run: `gh workflow run <name>`.
 
 ## Test & deploy checklist
 
 1. `npm run build` (tsc + vite clean).
-2. `npm run dev` → verify in browser: `#sat-load-status` = "Catalog Loaded: N", feed chips show expected statuses, ticker shows tagged events, search → select → telemetry panel + reticle.
-3. Cables: search a station (e.g. "virginia beach") → panel shows real connected cables.
-4. Clouds: `Clouds` chip shows `LIVE — NASA GIBS · SNPP[+NOAA-20] · <date> · DAY+NIGHT`; toggle OFF removes only the cloud layer (stylized Earth unchanged); no console warning about fallback. `npm run verify:clouds` passes (semantic chain + transfer tests, live date walk, coverage gates, colormap decode, no opaque black, no-data transparency, per-pixel NOAA-20 gap fill + gap-strip shrink, dateline seam). Zoom check: at global distance (≥3.8 R, up to maxDistance 4.2) clouds are fully visible over the real day/night terminator; one zoom inward (≤3.0 R) and clouds are gone with the night side lifted to full daylight (thresholds: `DETAIL_BLEND_NEAR=3.0`, `DETAIL_BLEND_FAR=3.8` earth radii — narrow band, no pop).
-5. Push to `main` → `gh run watch` the deploy → verify live bundle hash changed + `data/cables.json` serves 200.
-6. After changing feed code: `gh workflow run update-live-feeds.yml` and verify the `live-data` branch files + raw 200s.
-7. **Keep the docs current** — any change that affects behavior also updates `docs/architecture.md`, `docs/data-sources.md`, and the README's live-vs-curated notes.
+2. `npm run verify:geo` (data invariants, city/country placement, projection convention) and `npm run verify:clouds`.
+3. `npm run dev` → verify in browser: `#sat-load-status` = "Catalog Loaded: N", feed chips show expected statuses, ticker shows tagged events, search → select → telemetry panel + reticle.
+4. Geographic context: `Geography` chip = STATIC Natural Earth; at global view major country names + faint borders (no cities/admin-1); one zoom in → cities; deeper → state/province borders + labels; labels never leak past the globe silhouette; `Geographic Context` toggle OFF clears borders + labels.
+5. Cables: search a station (e.g. "virginia beach") → panel shows real connected cables.
+6. Clouds: `Clouds` chip shows `LIVE — NASA GIBS · SNPP[+NOAA-20] · <date> · DAY+NIGHT`; toggle OFF removes only the cloud layer (stylized Earth unchanged); no console warning about fallback. Zoom check: at global distance (≥3.8 R, up to maxDistance 4.2) clouds are fully visible over the real day/night terminator; one zoom inward (≤3.0 R) and clouds are gone with the night side lifted to full daylight (thresholds: `DETAIL_BLEND_NEAR=3.0`, `DETAIL_BLEND_FAR=3.8` earth radii — narrow band, no pop).
+7. Push to `main` → `gh run watch` the deploy → verify live bundle hash changed + `data/cables.json` serves 200.
+8. After changing feed code: `gh workflow run update-live-feeds.yml` and verify the `live-data` branch files + raw 200s.
+9. **Keep the docs current** — any change that affects behavior also updates `docs/architecture.md`, `docs/data-sources.md`, and the README's live-vs-curated notes.

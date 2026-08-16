@@ -1,11 +1,13 @@
 import {
   EARTH_RADIUS_KM,
-  KM_TO_UNITS,
   OPENSKY_BASE,
   OPENSKY_SNAPSHOT_CACHE_TTL_MS,
   OPENSKY_SNAPSHOT_URL,
   type FlightCategory,
 } from '../config';
+import { geoToScene } from '../geo/projection';
+
+export { geoToScene };
 
 export interface AircraftState {
   icao24: string;
@@ -82,20 +84,6 @@ function writeSnapshotCache(states: unknown[][]): void {
   } catch {
     // storage full/unavailable — non-fatal
   }
-}
-
-export function geoToScene(latDeg: number, lonDeg: number, altKm: number): [number, number, number] {
-  const lat = (latDeg * Math.PI) / 180;
-  const lon = (lonDeg * Math.PI) / 180;
-  const r = (EARTH_RADIUS_KM + altKm) * KM_TO_UNITS;
-
-  const clat = Math.cos(lat);
-  const ecfX = r * clat * Math.cos(lon);
-  const ecfY = r * clat * Math.sin(lon);
-  const ecfZ = r * Math.sin(lat);
-
-  // ECEF -> Scene (X -> X, Z -> Y, Y -> -Z)
-  return [ecfX, ecfZ, -ecfY];
 }
 
 function categorizeCallsign(callsign: string, altM: number, speedKmh: number): FlightCategory {
