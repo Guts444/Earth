@@ -1,0 +1,34 @@
+name: update-cables
+
+# Weekly refresh of the TeleGeography submarine-cable dataset snapshot
+# (public/data/cables.json) shipped with the site. A push to main also
+# triggers the Pages deploy, which is fine — deploys are ~1 minute.
+
+on:
+  schedule:
+    - cron: '23 3 * * 1' # Mondays 03:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build cables dataset
+        run: python3 scripts/build-cables-data.py
+
+      - name: Commit if changed
+        run: |
+          git config user.name "earth-command-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add public/data/cables.json
+          if git diff --cached --quiet; then
+            echo "no changes"
+            exit 0
+          fi
+          git commit -m "data: refresh submarine cable dataset $(date -u +%Y-%m-%d)"
+          git push origin HEAD:main

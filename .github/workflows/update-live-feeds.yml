@@ -1,0 +1,71 @@
+name: update-live-feeds
+
+# Feeds whose upstreams block browser CORS (OpenSky ADS-B, NOAA NHC) are
+# snapshotted to the orphan `live-data` branch; the client fetches them from
+# raw.githubusercontent.com (CORS-open) with a dev-proxy + cache + simulated
+# fallback chain. Cadence: every 20 minutes.
+
+on:
+  schedule:
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch OpenSky ADS-B snapshot
+        id: opensky
+        continue-on-error: true
+        run: |
+          curl -sS --retry 2 --retry-delay 5 --max-time 60 \
+            -A "earth-command-snapshot/1.0 (github actions)" \
+            "https://opensky-network.org/api/states/all" -o states_raw.json
+          python3 - <<'EOF'
+          import json
+          try:
+              data = json.load(open("states_raw.json"))
+          except Exception as e:
+              raise SystemExit(f"bad json: {e}")
+          states = data.get("states") or []
+          # Keep the states/all row schema positions (0..11) the client parses;
+          # drop the heavier trailing columns (sensors/squawk/geo altitude).
+          trimmed = [row[:12] if len(row) >= 12 else row for row in states]
+          json.dump({"time": data.get("time"), "states": trimmed},
+                    open("states.json", "w"), separators=(",", ":"))
+          print(f"opensky states: {len(trimmed)}")
+          EOF
+
+      - name: Fetch NOAA NHC snapshot
+        id: nhc
+        continue-on-error: true
+        run: |
+          curl -sS --retry 2 --retry-delay 5 --max-time 60 \
+            -A "earth-command-snapshot/1.0 (github actions)" \
+            "https://www.nhc.noaa.gov/CurrentStorms.json" -o nhc.json
+          python3 -c "import json;d=json.load(open('nhc.json'));print('nhc storms:',len(d.get('activeStorms',[])))"
+
+      - name: Commit to live-data branch
+        run: |
+          git config user.name "earth-command-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git checkout --orphan live-data
+          git rm -rf --quiet .
+          # stage whatever succeeded; a failed fetch keeps the previous file
+          for f in states.json nhc.json; do
+            [ -s "$f" ] && mv "$f" .
+          done
+          git add states.json nhc.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "no changes — branch untouched"
+            exit 0
+          fi
+          git commit -m "live-data: refresh snapshots $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push --force origin HEAD:live-data

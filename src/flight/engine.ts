@@ -1,4 +1,11 @@
-import { EARTH_RADIUS_KM, KM_TO_UNITS, OPENSKY_BASE, type FlightCategory } from '../config';
+import {
+  EARTH_RADIUS_KM,
+  KM_TO_UNITS,
+  OPENSKY_BASE,
+  OPENSKY_SNAPSHOT_CACHE_TTL_MS,
+  OPENSKY_SNAPSHOT_URL,
+  type FlightCategory,
+} from '../config';
 
 export interface AircraftState {
   icao24: string;
@@ -48,6 +55,33 @@ type OpenSkyRawState = [
 interface OpenSkyResponse {
   time: number;
   states: OpenSkyRawState[] | null;
+}
+
+// --- Snapshot cache (localStorage) — survives transient branch-fetch failures
+
+const SNAPSHOT_CACHE_KEY = 'earth:opensky:snapshot';
+
+function readSnapshotCache(): { states: unknown[][]; ts: number } | null {
+  try {
+    const raw = localStorage.getItem(SNAPSHOT_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { states?: unknown[][]; ts?: number };
+    if (!parsed || !Array.isArray(parsed.states)) return null;
+    return { states: parsed.states, ts: parsed.ts ?? 0 };
+  } catch {
+    return null;
+  }
+}
+
+function writeSnapshotCache(states: unknown[][]): void {
+  try {
+    localStorage.setItem(
+      SNAPSHOT_CACHE_KEY,
+      JSON.stringify({ states, ts: Date.now() }),
+    );
+  } catch {
+    // storage full/unavailable — non-fatal
+  }
 }
 
 export function geoToScene(latDeg: number, lonDeg: number, altKm: number): [number, number, number] {
@@ -154,6 +188,8 @@ export class FlightEngine {
   private scheduledSimRoutes: ScheduledRoute[] = [];
   private lastFetchMs = 0;
   private isLiveFeedActive = false;
+  /** Where the current fleet came from — shown in the HUD feed status. */
+  feedSource: 'proxy' | 'branch' | 'branch-cache' | 'simulated' = 'simulated';
 
   constructor() {
     this.initSimulatedFleet(1800);
@@ -242,70 +278,106 @@ export class FlightEngine {
   }
 
   async fetchLiveStates(): Promise<void> {
+    // 1) Dev/preview proxy (vite.config.ts caches with 15s TTL)
     try {
-      const res = await fetch(OPENSKY_BASE);
-      if (!res.ok) {
-        throw new Error(`OpenSky status ${res.status}`);
+      const res = await fetch(OPENSKY_BASE, { signal: AbortSignal.timeout(12000) });
+      if (res.ok) {
+        const data = (await res.json()) as OpenSkyResponse;
+        if (data && Array.isArray(data.states) && data.states.length > 0) {
+          this.applyStates(data.states, 'proxy');
+          return;
+        }
       }
-      const data = (await res.json()) as OpenSkyResponse;
+    } catch {
+      // fall through to snapshot
+    }
 
-      if (!data.states || data.states.length === 0) {
-        // Fallback to simulated if empty
-        return;
+    // 2) CI-fed snapshot branch — the production path (CORS-closed upstream)
+    try {
+      const res = await fetch(OPENSKY_SNAPSHOT_URL, { signal: AbortSignal.timeout(20000) });
+      if (res.ok) {
+        const data = (await res.json()) as { states?: unknown[][] };
+        if (data && Array.isArray(data.states) && data.states.length > 0) {
+          writeSnapshotCache(data.states);
+          this.applyStates(data.states, 'branch');
+          return;
+        }
       }
+    } catch {
+      // fall through to cache
+    }
 
-      const parsed: AircraftState[] = [];
-      const now = Date.now();
+    // 3) Last known-good snapshot from localStorage (survives transient failures)
+    const cached = readSnapshotCache();
+    if (
+      cached &&
+      Date.now() - cached.ts < OPENSKY_SNAPSHOT_CACHE_TTL_MS &&
+      cached.states.length > 0
+    ) {
+      this.applyStates(cached.states, 'branch-cache');
+      return;
+    }
 
-      for (const row of data.states) {
-        const icao24 = row[0];
-        const callsign = (row[1] ?? 'FLT').trim() || `ICAO-${icao24}`;
-        const country = row[2] || 'International';
-        const lon = row[5];
-        const lat = row[6];
-        const baroAlt = row[7];
-        const onGround = Boolean(row[8]);
-        const velocityMs = row[9] ?? 230;
-        const heading = row[10] ?? 0;
-        const verticalRate = row[11] ?? 0;
+    // 4) Honest simulated fallback — reported as such in the HUD
+    this.isLiveFeedActive = false;
+    this.feedSource = 'simulated';
+    console.warn('OpenSky: proxy + snapshot + cache unavailable — simulated fleet active');
+  }
 
-        if (lat == null || lon == null || onGround) continue;
+  /** Parse a states/all snapshot (proxy or CI branch share the same schema). */
+  private applyStates(
+    rows: unknown[][],
+    source: 'proxy' | 'branch' | 'branch-cache',
+  ): void {
+    const parsed: AircraftState[] = [];
+    const now = Date.now();
 
-        const altM = Math.max(baroAlt ?? 10000, 500);
-        const altKm = altM / 1000;
-        const speedKms = (velocityMs * 3.6) / 3600;
-        const speedKmh = velocityMs * 3.6;
-        const [x, y, z] = geoToScene(lat, lon, altKm);
+    for (const row of rows) {
+      const icao24 = String(row[0] ?? '');
+      const callsign = (row[1] ?? 'FLT').toString().trim() || `ICAO-${icao24}`;
+      const country = row[2] != null ? String(row[2]) : 'International';
+      const lon = row[5] as number | null;
+      const lat = row[6] as number | null;
+      const baroAlt = row[7] as number | null;
+      const onGround = Boolean(row[8]);
+      const velocityMs = (row[9] as number | null) ?? 230;
+      const heading = (row[10] as number | null) ?? 0;
+      const verticalRate = (row[11] as number | null) ?? 0;
 
-        parsed.push({
-          icao24,
-          callsign,
-          country,
-          lat,
-          lon,
-          altM,
-          altKm,
-          speedKms,
-          speedKmh,
-          headingDeg: heading,
-          climbRateMs: verticalRate,
-          onGround: false,
-          category: categorizeCallsign(callsign, altM, speedKmh),
-          lastUpdatedMs: now,
-          x,
-          y,
-          z,
-        });
-      }
+      if (lat == null || lon == null || onGround) continue;
 
-      if (parsed.length > 50) {
-        this.aircraftList = parsed;
-        this.isLiveFeedActive = true;
-        this.lastFetchMs = now;
-      }
-    } catch (err) {
-      console.warn('OpenSky fetch fallback to scheduled simulated fleet:', err);
-      this.isLiveFeedActive = false;
+      const altM = Math.max(baroAlt ?? 10000, 500);
+      const altKm = altM / 1000;
+      const speedKms = (velocityMs * 3.6) / 3600;
+      const speedKmh = velocityMs * 3.6;
+      const [x, y, z] = geoToScene(lat, lon, altKm);
+
+      parsed.push({
+        icao24,
+        callsign,
+        country,
+        lat,
+        lon,
+        altM,
+        altKm,
+        speedKms,
+        speedKmh,
+        headingDeg: heading,
+        climbRateMs: verticalRate,
+        onGround: false,
+        category: categorizeCallsign(callsign, altM, speedKmh),
+        lastUpdatedMs: now,
+        x,
+        y,
+        z,
+      });
+    }
+
+    if (parsed.length > 50) {
+      this.aircraftList = parsed;
+      this.isLiveFeedActive = true;
+      this.feedSource = source;
+      this.lastFetchMs = now;
     }
   }
 

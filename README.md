@@ -14,7 +14,7 @@ A high-performance, real-time 3D planetary intelligence platform and tactical op
 
 ## 🛰️ Monitored Signal Domains
 
-> **Live vs. curated:** satellites (CelesTrak), aviation (OpenSky), earthquakes (USGS), tropical cyclones (NOAA NHC), aurora/space weather (NOAA SWPC), and launch schedules (Launch Library 2) ingest live feeds. Wildfires, volcanoes, DSN, asteroids, marine traffic, infrastructure, and EW zones are curated datasets with real-data provenance rendered with animated shaders.
+> **Live vs. curated:** satellites (CelesTrak), aviation (OpenSky ADS-B), earthquakes (USGS), tropical cyclones (NOAA NHC), aurora/space weather (NOAA SWPC), and launch schedules (Launch Library 2) ingest live feeds. Wildfires, volcanoes, DSN, asteroids, marine traffic, infrastructure, and EW zones are curated datasets with real-data provenance rendered with animated shaders. The bottom **DATA FEEDS** strip shows every feed's honest status (green = live, amber = simulated, blue = static snapshot, red = unreachable) — hover a chip for the source and freshness. The event ticker only carries sourced events (`[USGS]`, `[NHC]`, `[CelesTrak]`, …).
 
 ### 1. Orbital Mechanics & Satellite Constellations
 - **Live CelesTrak Integration**: Propagates 11,000+ active satellites across Starlink, OneWeb, GPS/GLONASS/Galileo/BeiDou constellations, ISS, and scientific payloads.
@@ -22,14 +22,14 @@ A high-performance, real-time 3D planetary intelligence platform and tactical op
 - **Overlays**: Interactive orbital path projections, ground footprints, and NORAD telemetry.
 
 ### 2. Global Aviation (ADS-B)
-- **OpenSky Network Feeds**: Live transponder ingestion mapped to high-altitude scene coordinates.
+- **OpenSky Network Feeds**: Live transponder ingestion mapped to high-altitude scene coordinates. On static hosting (where OpenSky's CORS-closed API is unreachable) the site consumes a CI-fed 20-minute snapshot from the `live-data` branch, with a localStorage cache and an honest simulated-fleet fallback — the DATA FEEDS chip tells you which mode is active.
 - **Great-Circle Routing Engine**: Autonomous simulation spanning international flight corridors across commercial, cargo, military, and general aviation.
 
 ### 3. Maritime Logistics (AIS)
 - **Nautical Corridors**: Over 950 container ships, bulk carriers, oil tankers, and naval vessels navigating 7 global oceanic routes (Suez, Panama, Malacca, Dover, Cape of Good Hope, Trans-Pacific, South Atlantic) with zero land crossings.
 
 ### 4. Critical Infrastructure
-- **Submarine Fiber Cables**: 9 transoceanic internet trunks (MAREA, Dunant, Grace Hopper, 2Africa, SEA-ME-WE 5, Southern Cross, etc.) with animated data pulses along the ocean floor and 10 global landing station hubs.
+- **Submarine Fiber Cables**: Full TeleGeography dataset — **700+ cable systems and ~1,900 landing stations** with real route geometry (weekly-synced snapshot at `data/cables.json`, built by `scripts/build-cables-data.py`). Hover/click a station for its real connected cables.
 - **Nuclear Power Facilities**: Global nuclear generating stations (Zaporizhzhia, Bruce, Kashiwazaki-Kariwa, Gravelines, Hanul, Palo Verde, Barakah, Taishan, etc.) detailing reactor models, unit counts, and net MWe capacity.
 
 ### 5. Deep Space & Heliophysics
@@ -56,6 +56,8 @@ A high-performance, real-time 3D planetary intelligence platform and tactical op
 - **Global Search**: Instant fuzzy search across any entity across all 10 domains (e.g. `Voyager`, `Apophis`, `Etna`, `Milton`, `Starbase`, `Marea`, `Zaporizhzhia`).
 - **Solar Terminator & Daylight Toggle**: Real-time NOAA solar vector calculations with day/night illumination or permanent full-daylight mode.
 - **Time Warp Controls**: Real-time UTC simulation playback, pause, and up to 60× acceleration.
+- **Distance-Adaptive Rotation**: orbit speed scales with camera distance — precise slow rotation at max zoom, full speed when zoomed out.
+- **DATA FEEDS Strip**: live/static/simulated status for every data source, with freshness tooltips.
 - **HUD Themes**: `Cyber Blue`, `Tactical Amber`, `Emerald Radar`, and `Stealth`.
 
 ---
@@ -94,9 +96,13 @@ Open `http://localhost:5173/` in your browser.
 
 ## 🌍 Live Deployment
 
-The app deploys to **GitHub Pages** automatically via `.github/workflows/deploy.yml` (push to `main`). Live feeds with CORS-open upstreams (CelesTrak, USGS, SWPC, Launch Library 2) fall back to direct fetches on static hosting; OpenSky (rate-limited, no CORS) and NHC (no CORS) degrade to their simulated/curated fallbacks.
+The app deploys to **GitHub Pages** automatically via `.github/workflows/deploy.yml` (push to `main`). Live feeds with CORS-open upstreams (CelesTrak, USGS, SWPC, Launch Library 2) fetch directly on static hosting.
+
+**CORS-closed feeds** (OpenSky ADS-B, NOAA NHC) are snapshotted every 20 minutes by `.github/workflows/update-live-feeds.yml` to the orphan `live-data` branch; the client falls back through dev proxy → `raw.githubusercontent.com` snapshot → localStorage cache → simulated/curated fallback.
 
 Satellite TLEs are refreshed **every 6 hours** by `.github/workflows/update-tles.yml` — a cron job that runs on GitHub's servers (no local machine needed) and force-pushes all 12 catalog groups to the orphan `tle-data` branch, which the site fetches from `raw.githubusercontent.com`. CelesTrak is the primary source, with the GitHub-hosted changshuospace mirror as fallback for throttled groups.
+
+The submarine-cable dataset is refreshed **weekly** by `.github/workflows/update-cables.yml` (Monday 03:23 UTC) — it rebuilds `data/cables.json` from TeleGeography's API and pushes it to `main`, which re-deploys the site.
 
 1. Make sure the repository is **public** (GitHub Pages is not available for private repos on the free plan).
 2. Repo Settings → Pages → **Source: GitHub Actions**.

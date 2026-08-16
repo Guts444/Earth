@@ -10,7 +10,6 @@ import * as THREE from 'three';
 import type { DomainType, SelectedTarget } from '../config';
 import { DSN_COMPLEXES } from '../space/dsn';
 import { GPS_JAM_ZONES } from '../tactical/gpsJam';
-import { LANDING_STATIONS } from '../infra/cables';
 import { NUCLEAR_PLANTS } from '../infra/nuclear';
 import type { AircraftScene } from '../flight/aircraftScene';
 import type { FlightEngine } from '../flight/engine';
@@ -291,37 +290,40 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
   const cable: DomainAdapter = {
     id: 'cable',
     pick: (r, c, p) => d.cablesScene.pick(r, c, p),
-    count: () => LANDING_STATIONS.length,
+    count: () => d.cablesScene.stations.length,
     highlight: (i) => d.cablesScene.highlight(i),
     setVisible: (v) => d.cablesScene.setVisible(v),
     buildTarget(index) {
-      if (index < 0 || index >= LANDING_STATIONS.length) return null;
-      const st = LANDING_STATIONS[index];
+      const st = d.cablesScene.stations[index];
+      if (!st) return null;
       return {
         domain: 'cable',
         id: 'CABLE-HUB',
         name: st.name,
-        subType: 'Subsea Fiber Hub',
+        subType: 'Subsea Landing Station',
         lat: st.lat,
         lon: st.lon,
         altKm: 0,
         speedKmh: 0,
         country: st.country,
         extra: {
-          'Connected Cables': st.cables.join(', '),
-          'Global Capacity': '100+ Tbps DWDM',
+          'Connected Cables':
+            st.cables.length > 0 ? st.cables.join(', ') : '— (not in dataset)',
         },
         scenePos: [st.x, st.y, st.z],
       };
     },
     search(query, push) {
-      LANDING_STATIONS.forEach((st, idx) => {
-        if (st.name.toLowerCase().includes(query) || st.country.toLowerCase().includes(query)) {
+      d.cablesScene.stations.forEach((st, idx) => {
+        if (
+          st.name.toLowerCase().includes(query) ||
+          st.country.toLowerCase().includes(query)
+        ) {
           push({
             domain: 'cable',
             index: idx,
             name: st.name,
-            extra: `${st.country} (${st.cables.join(', ')})`,
+            extra: `${st.country} (${st.cables.length} cables)`,
           });
         }
       });

@@ -1,4 +1,4 @@
-import { EARTH_RADIUS } from '../config';
+import { EARTH_RADIUS, NHC_SNAPSHOT_URL } from '../config';
 
 export interface CycloneRecord {
   id: string;
@@ -216,8 +216,23 @@ export function setLiveCyclones(records: CycloneRecord[]): void {
 }
 
 export async function fetchLiveCyclones(): Promise<CycloneRecord[]> {
-  const res = await fetch(NHC_BASE);
-  if (!res.ok) throw new Error(`NHC: HTTP ${res.status}`);
+  // 1) Dev/preview proxy → 2) CI snapshot branch (production path, since
+  // NHC sends no CORS headers) — the snapshot keeps CurrentStorms.json shape.
+  let res: Response | null = null;
+  try {
+    res = await fetch(NHC_BASE, { signal: AbortSignal.timeout(12000) });
+    if (!res.ok) res = null;
+  } catch {
+    res = null;
+  }
+  if (!res) {
+    try {
+      res = await fetch(NHC_SNAPSHOT_URL, { signal: AbortSignal.timeout(20000) });
+    } catch {
+      res = null;
+    }
+  }
+  if (!res || !res.ok) throw new Error(`NHC: HTTP ${res?.status ?? 'unreachable'}`);
   const records = mapNhcStorms(await res.json());
   if (records.length === 0) throw new Error('NHC: no active storms');
   return records;

@@ -18,6 +18,18 @@ export const CELESTRAK_BASE = '/api/celestrak/NORAD/elements/gp.php';
 export const OPENSKY_BASE = '/api/opensky/states/all';
 export const USGS_BASE = '/api/usgs/earthquakes';
 
+/**
+ * CI-fed snapshot branch (live-data) — the production path for feeds whose
+ * upstreams block browser CORS (OpenSky, NOAA NHC). Refreshed by
+ * .github/workflows/update-live-feeds.yml.
+ */
+export const LIVE_DATA_BRANCH = 'live-data';
+export const LIVE_DATA_BASE =
+  'https://raw.githubusercontent.com/Guts444/Earth/live-data';
+export const OPENSKY_SNAPSHOT_URL = `${LIVE_DATA_BASE}/states.json`;
+export const NHC_SNAPSHOT_URL = `${LIVE_DATA_BASE}/nhc.json`;
+export const OPENSKY_SNAPSHOT_CACHE_TTL_MS = 20 * 60 * 1000;
+
 // ---------------------------------------------------------------------------
 // Domains & Selection
 // ---------------------------------------------------------------------------

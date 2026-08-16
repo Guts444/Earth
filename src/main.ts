@@ -41,6 +41,7 @@ import { SatelliteCloud } from './scene/satellites';
 import { TargetLockController } from './scene/targetLock';
 import type { PickHit } from './domains/pick';
 import { fetchLiveCyclones, setLiveCyclones } from './geo/cyclones';
+import { loadCableData } from './infra/cables';
 import {
   applyUpcomingLaunches,
   fetchUpcomingLaunches,
@@ -48,7 +49,7 @@ import {
 } from './space/launches';
 import { gScaleForKp, kpToAuroraBrightness, refreshSpaceWeather } from './space/spaceWeather';
 import { loadCatalog } from './tle/catalog';
-import { CommandCenterUI, type OverlayType } from './ui/commandCenter';
+import { CommandCenterUI, type FeedStatus, type OverlayType } from './ui/commandCenter';
 
 // ---------------------------------------------------------------------------
 // Canvas & Scene Setup
@@ -211,6 +212,10 @@ let lastFlightPollMs = 0;
 let lastQuakePollMs = 0;
 let lastSunUpdateMs = Number.NEGATIVE_INFINITY;
 let earthSystem: Awaited<ReturnType<typeof createEarth>> | null = null;
+
+// Feed-status tracking for honest ticker/status reporting
+let lastFlightMode: 'live' | 'sim' | null = null;
+let lastQuakeMaxMs = 0;
 
 // Multi-domain selection state: active index per domain (-1 = none)
 let currentSelectedTarget: SelectedTarget | null = null;
@@ -467,6 +472,36 @@ const commandUI = new CommandCenterUI({
   },
 });
 
+// ---------------------------------------------------------------------------
+// DATA FEEDS status registry — drives the bottom status chips
+// ---------------------------------------------------------------------------
+
+const feedStatuses = new Map<
+  string,
+  { label: string; status: FeedStatus; detail: string }
+>();
+
+function setFeed(id: string, label: string, status: FeedStatus, detail: string): void {
+  const prev = feedStatuses.get(id);
+  feedStatuses.set(id, { label, status, detail });
+  if (!prev || prev.status !== status || prev.detail !== detail) {
+    commandUI.setFeedStatus(
+      [...feedStatuses.entries()].map(([k, v]) => ({ id: k, ...v })),
+    );
+  }
+}
+
+// Static/curated sources are honest from the start
+setFeed('marine', 'Marine', 'static', 'curated fleet + simulated movement');
+setFeed('geo', 'Geo', 'static', 'curated: volcanoes, wildfires, DSN, asteroids, nuclear, GPS jam');
+setFeed('cables', 'Cables', 'off', 'dataset loading…');
+setFeed('sats', 'Sats', 'off', 'connecting…');
+setFeed('quakes', 'Quakes', 'off', 'connecting…');
+setFeed('flights', 'Flights', 'off', 'connecting…');
+setFeed('cyclones', 'Cyclones', 'off', 'connecting…');
+setFeed('spacewx', 'SpaceWx', 'off', 'connecting…');
+setFeed('launches', 'Launches', 'off', 'connecting…');
+
 // Target lock & chase cam controller (after UI so the disengage callback is safe)
 const targetLock = new TargetLockController(reticleEl, camera, controls, canvas, () => {
   commandUI?.setChaseButtonState(false);
@@ -511,9 +546,12 @@ async function loadSatellites(): Promise<void> {
     });
     satCloud.setCatalog(catalog);
     if (statusEl) statusEl.textContent = `Catalog Loaded: ${satCloud.count.toLocaleString()} Active Satellites`;
+    setFeed('sats', 'Sats', 'live', `CelesTrak · ${satCloud.count.toLocaleString()} TLEs · 6h sync`);
+    commandUI.pushEvent(`[CelesTrak] ${satCloud.count.toLocaleString()} satellite elements loaded (${Array.from(activeSatGroups).join(', ')})`);
   } catch (err) {
     console.warn('CelesTrak fetch error:', err);
     if (statusEl) statusEl.textContent = `Sync Offline — Fallback Active (${satCloud.count} sats)`;
+    setFeed('sats', 'Sats', 'off', 'CelesTrak unreachable — cached elements only');
   }
 }
 
@@ -524,13 +562,44 @@ async function pollFlights(): Promise<void> {
   } catch {
     // handled in engine
   }
+  const mode: FeedStatus = flightEngine.isLive ? 'live' : 'sim';
+  if (mode !== lastFlightMode) {
+    lastFlightMode = mode;
+    commandUI.pushEvent(
+      mode === 'live'
+        ? `[OpenSky] ADS-B live — ${flightEngine.count.toLocaleString()} aircraft (${flightEngine.feedSource})`
+        : '[SIM] OpenSky unreachable — scheduled fleet active',
+    );
+  }
+  setFeed(
+    'flights',
+    'Flights',
+    mode,
+    mode === 'live'
+      ? `OpenSky ADS-B · ${flightEngine.count.toLocaleString()} ac · ${flightEngine.feedSource} · 20 min`
+      : 'Simulated fleet (OpenSky unreachable)',
+  );
 }
 
 async function pollQuakes(): Promise<void> {
   try {
     await earthquakeSystem.fetchQuakes();
+    const list = earthquakeSystem.list;
+    setFeed('quakes', 'Quakes', 'live', `USGS · ${list.length} events · 60s poll`);
+    let maxTime = 0;
+    for (const q of list) if (q.timeMs > maxTime) maxTime = q.timeMs;
+    if (lastQuakeMaxMs > 0) {
+      const fresh = list
+        .filter((q) => q.timeMs > lastQuakeMaxMs && q.mag >= 5.0)
+        .sort((a, b) => b.mag - a.mag);
+      const top = fresh[0];
+      if (top) {
+        commandUI.pushEvent(`[USGS] M${top.mag.toFixed(1)} earthquake — ${top.place}`);
+      }
+    }
+    lastQuakeMaxMs = Math.max(lastQuakeMaxMs, maxTime);
   } catch {
-    // handled in system
+    setFeed('quakes', 'Quakes', 'off', 'USGS unreachable');
   }
 }
 
@@ -544,10 +613,15 @@ async function pollSpaceWeather(): Promise<void> {
   if (kp !== null && valEl) {
     valEl.textContent = `Kp ${kp.toFixed(1)} (${gScaleForKp(kp).split(' ')[0]})`;
   }
+  if (kp !== null) {
+    setFeed('spacewx', 'SpaceWx', 'live', `SWPC · Kp ${kp.toFixed(1)} · 15 min`);
+  } else {
+    setFeed('spacewx', 'SpaceWx', 'off', 'SWPC unreachable');
+  }
   if (kp !== null && auroraScene) {
     auroraScene.setBrightness(kpToAuroraBrightness(kp));
     if (kp >= 5) {
-      commandUI.pushEvent(`NOAA SWPC: Geomagnetic storm in progress — Kp ${kp.toFixed(1)} (${gScaleForKp(kp)})`);
+      commandUI.pushEvent(`[SWPC] Geomagnetic storm in progress — Kp ${kp.toFixed(1)} (${gScaleForKp(kp)})`);
     }
   }
 }
@@ -558,17 +632,18 @@ async function pollCyclones(): Promise<void> {
     const records = await fetchLiveCyclones();
     setLiveCyclones(records);
     cyclonesScene.setStorms(records);
+    setFeed('cyclones', 'Cyclones', 'live', `NHC · ${records.length} storms · 30 min`);
     if (records.length !== lastCycloneCount) {
       lastCycloneCount = records.length;
       const summary = records
         .map((s) => `${s.name} (${s.maxWindsKts} kts)`)
         .join(', ');
       commandUI.pushEvent(
-        `NOAA NHC: ${records.length} active tropical cyclone${records.length > 1 ? 's' : ''} — ${summary}`,
+        `[NHC] ${records.length} active tropical cyclone${records.length > 1 ? 's' : ''} — ${summary}`,
       );
     }
   } catch {
-    // static cyclone list stays as fallback
+    setFeed('cyclones', 'Cyclones', 'static', 'NHC unreachable — curated storm list');
   }
 }
 
@@ -577,15 +652,16 @@ async function pollLaunches(): Promise<void> {
   try {
     const launches = await fetchUpcomingLaunches();
     applyUpcomingLaunches(launches);
+    setFeed('launches', 'Launches', 'live', `Launch Library 2 · ${launches.length} upcoming · 30 min`);
     const next = launches.find((l) => l.netMs > Date.now());
     if (next && next.netMs - lastLaunchEventMs > 5 * 60 * 1000) {
       lastLaunchEventMs = next.netMs;
       commandUI.pushEvent(
-        `Next launch: ${next.name} from ${next.padName} — ${formatTMinus(next.netMs)}`,
+        `[LL2] Next launch: ${next.name} from ${next.padName} — ${formatTMinus(next.netMs)}`,
       );
     }
   } catch {
-    // static pad data stays
+    setFeed('launches', 'Launches', 'static', 'LL2 unreachable — curated pad list');
   }
 }
 
@@ -668,6 +744,12 @@ function animate(now: number): void {
   }
 
   // Update OrbitControls & Target Tracking Reticle
+  // Distance-adaptive orbit speed: slow & precise near the surface, fast far out
+  controls.rotateSpeed = THREE.MathUtils.clamp(
+    camera.position.length() * 0.16,
+    0.16,
+    0.65,
+  );
   targetLock.update(deltaWallSec);
   controls.update();
 
@@ -718,6 +800,22 @@ async function init(): Promise<void> {
 
   // Start rendering immediately
   requestAnimationFrame(animate);
+
+  // Submarine cable dataset (TeleGeography full map, same-origin snapshot)
+  loadCableData()
+    .then((ds) => {
+      cablesScene.setData(ds.cables, ds.stations);
+      setFeed(
+        'cables',
+        'Cables',
+        'static',
+        `TeleGeography · ${ds.cables.length} systems · ${ds.stations.length} stations · weekly sync`,
+      );
+      commandUI.pushEvent(
+        `[TeleGeography] ${ds.cables.length} cable systems / ${ds.stations.length} landing stations loaded`,
+      );
+    })
+    .catch(() => setFeed('cables', 'Cables', 'off', 'dataset unavailable'));
 
   // Background async loaders
   loadSatellites().catch((e) => console.warn('Satellite loader warning:', e));

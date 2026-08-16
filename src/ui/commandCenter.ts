@@ -32,6 +32,17 @@ export type OverlayType =
   | 'cables'
   | 'nuclear';
 
+/** Honest data-source state for the bottom DATA FEEDS strip. */
+export type FeedStatus = 'live' | 'sim' | 'static' | 'off';
+
+export interface FeedChip {
+  id: string;
+  label: string;
+  status: FeedStatus;
+  /** Tooltip detail — source + freshness. */
+  detail: string;
+}
+
 export interface CommandCenterCallbacks {
   onSatelliteGroupToggle: (id: SatGroupId, checked: boolean) => void;
   onFlightCategoryToggle: (cat: FlightCategory, checked: boolean) => void;
@@ -464,41 +475,55 @@ export class CommandCenterUI {
   private lastValues = new Map<string, string>();
 
   private startEventTicker(): void {
-    const SAMPLE_EVENTS = [
-      'ISS (ZARYA) entering orbital daybreak over South Pacific',
-      'OpenSky ADS-B live stream: 7,800+ global aircraft positions refreshed',
-      'USGS Seismic Alert: M5.1 earthquake recorded offshore Indonesia (depth 10km)',
-      'Starlink G7-18 constellation node passing orbital apex FL550',
-      'Vessel EVER GIVEN approaching Suez Canal transit convoy',
-      'NOAA SWPC: Aurora Oval expanded under Kp 3.3 solar wind excitation',
-      'NASA DSN Goldstone DSS-14 lock: Voyager 1 telemetry downlink active at 163.5 AU',
-      'NASA JPL Near-Earth Asteroid Apophis tracking: nominal trajectory at 0.08 LD',
-      'NASA FIRMS: Thermal anomaly cluster active in Amazon southern basin',
-      'Smithsonian GVP: Mount Etna SE Crater explosive Strombolian activity detected',
-      'Super Typhoon MAN-YI (Pepito) sustained 145 kts in Philippine Sea',
-      'Baltic Sea EW corridor: 92% GNSS denial / spoofing detected',
-      'Cape Canaveral SLC-40 Falcon 9 launch countdown T-3h 56m',
-      'Submarine Fiber MAREA 200 Tbps transatlantic operational link nominal',
-    ];
-
-    let idx = 0;
+    // Rotate through the ring of REAL events pushed by the live feeds.
+    // No fabricated sample events — everything shown is sourced.
     setInterval(() => {
-      // Real events (from live feeds) take priority over the curated samples.
-      const text = this.tickerQueue.length
-        ? this.tickerQueue.shift()!
-        : SAMPLE_EVENTS[idx];
-      idx = (idx + 1) % SAMPLE_EVENTS.length;
-      this.showTicker(text);
+      if (this.tickerHistory.length === 0) return;
+      this.tickerIdx = (this.tickerIdx + 1) % this.tickerHistory.length;
+      this.showTicker(this.tickerHistory[this.tickerIdx]);
     }, 4000);
   }
 
-  /** Show a real event in the ticker immediately (also queued for rotation). */
+  /** Show a real event immediately and keep it in the rotation ring. */
   pushEvent(text: string): void {
-    this.tickerQueue.push(text);
+    if (this.tickerHistory[0] === text) return;
+    this.tickerHistory.unshift(text);
+    if (this.tickerHistory.length > 8) this.tickerHistory.length = 8;
+    this.tickerIdx = 0;
     this.showTicker(text);
   }
 
-  private tickerQueue: string[] = [];
+  private tickerHistory: string[] = [];
+  private tickerIdx = 0;
+
+  /**
+   * Render the DATA FEEDS strip (bottom bar). Chips are built once and only
+   * touched again when their status/detail actually changed.
+   */
+  setFeedStatus(chips: FeedChip[]): void {
+    const strip = document.querySelector<HTMLElement>('#feed-strip');
+    if (!strip) return;
+    for (const chip of chips) {
+      let el = this.feedChipEls.get(chip.id);
+      if (!el) {
+        el = document.createElement('span');
+        el.className = 'feed-chip';
+        el.innerHTML = '<span class="dot"></span><span class="label"></span>';
+        strip.appendChild(el);
+        this.feedChipEls.set(chip.id, el);
+      }
+      const key = `${chip.status}|${chip.detail}`;
+      if (this.feedChipState.get(chip.id) === key) continue;
+      this.feedChipState.set(chip.id, key);
+      el.className = `feed-chip st-${chip.status}`;
+      const label = el.querySelector('.label');
+      if (label) label.textContent = chip.label;
+      el.title = `${chip.status.toUpperCase()} — ${chip.detail}`;
+    }
+  }
+
+  private feedChipEls = new Map<string, HTMLElement>();
+  private feedChipState = new Map<string, string>();
   private lastTickerText = '';
 
   private showTicker(text: string): void {
