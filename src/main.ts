@@ -415,7 +415,7 @@ const commandUI = new CommandCenterUI({
     if (overlay === 'daylight' && earthSystem) {
       earthSystem.setFullDaylight(checked);
     } else if (overlay === 'clouds' && earthSystem) {
-      earthSystem.setLiveImagery(checked);
+      earthSystem.setCloudsVisible(checked);
     } else if (overlay === 'grid') {
       tacticalGrids.setGridVisible(checked);
     } else if (overlay === 'terminator') {
@@ -795,17 +795,21 @@ async function init(): Promise<void> {
   try {
     earthSystem = await createEarth(renderer);
     scene.add(earthSystem.group);
-    const img = earthSystem.imagery;
-    if (img.available) {
-      setFeed(
-        'clouds',
-        'Clouds',
-        'live',
-        `NASA GIBS · MODIS satellite imagery · ${img.date ?? 'today'}`,
-      );
-    } else {
-      setFeed('clouds', 'Clouds', 'off', 'GIBS unreachable — stylized map only');
-    }
+    // The cloud overlay loads in the background — the chip starts honest and
+    // flips to LIVE (source · date · mode) as soon as real data is in hand.
+    setFeed('clouds', 'Clouds', 'off', 'loading…');
+    earthSystem.cloudsReady.then((layer) => {
+      if (layer) {
+        setFeed(
+          'clouds',
+          'Clouds',
+          'live',
+          `NASA GIBS · ${layer.source} · ${layer.date} · DAY+NIGHT`,
+        );
+      } else {
+        setFeed('clouds', 'Clouds', 'off', 'GIBS cloud mask unreachable — stylized Earth only');
+      }
+    });
   } catch (err) {
     console.error('Failed to initialize Earth system:', err);
     setFeed('clouds', 'Clouds', 'off', 'unavailable');

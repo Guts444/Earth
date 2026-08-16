@@ -15,7 +15,7 @@
 | `src/config.ts` | Constants: scene radii, feed URLs + branch bases, satellite groups, domain types, cache TTLs |
 | `src/domains/registry.ts` | `DomainAdapter` interface + `createDomainLayers()` factory — one adapter per domain; main.ts drives everything generically |
 | `src/domains/pick.ts` | Shared **screen-space picking** helper (`pickPointsNearestCursor`) |
-| `src/scene/` | `earth.ts` (planet + atmosphere + live imagery mix), `liveImagery.ts` (NASA GIBS tile composite), `satellites.ts` (11k-point cloud + SGP4 buffers), `overlays.ts` (orbits/footprints/markers), `grids.ts` (terminator/grids), `targetLock.ts` (fly-to/chase/reticle) |
+| `src/scene/` | `earth.ts` (planet + atmosphere + cloud overlay wiring), `clouds.ts` (NASA GIBS VIIRS cloud mask → dedicated cloud sphere), `cloudColormap.json` (official GIBS colormap for decoding), `satellites.ts` (11k-point cloud + SGP4 buffers), `overlays.ts` (orbits/footprints/markers), `grids.ts` (terminator/grids), `targetLock.ts` (fly-to/chase/reticle) |
 | `src/tle/catalog.ts` | TLE fetch chain: localStorage → dev proxy → `tle-data` branch → direct CelesTrak |
 | `src/orbit/propagator.ts` | Batched SGP4 propagation (500ms cadence) |
 | `src/space/` | `dsn.ts` + scene, `launches.ts` + scene (Launch Library 2), `asteroids.ts` + scene, `spaceWeather.ts` (SWPC Kp), `auroraScene.ts` |
@@ -79,7 +79,7 @@ dev/preview proxy (vite) → CI snapshot branch (raw.githubusercontent, CORS-ope
 - **NHC cyclones** (20 min): proxy → `live-data/nhc.json` → curated list. Same CORS story.
 - **USGS quakes** (60s), **SWPC Kp** (15 min), **LL2 launches** (30 min): CORS-open, direct fetch.
 - **Cables**: same-origin `data/cables.json` (weekly CI rebuild) → curated fallback.
-- **Clouds (live satellite view)**: the "Clouds" overlay toggle swaps the day-side texture for a GIBS MODIS Terra corrected-reflectance composite (8×4 tiles @ z3 → 4096×2048, matching the stylized day texture). GIBS returns 200 + black tiles for unpublished dates, so `liveImagery.ts` probes tile content and backtracks up to 3 days. On failure the stylized map stays (chip OFF); there is no static cloud texture anymore.
+- **Clouds (real cloud overlay)**: the "Clouds" overlay toggle controls a dedicated transparent sphere at `EARTH_RADIUS × CLOUDS_SCALE` (1.004) carrying **NASA GIBS VIIRS Clear Sky Confidence** (Day + Night; SNPP primary, NOAA-20 fallback). `clouds.ts` fetches a single global equirectangular WMS 1.1.1 raster (`EPSG:4326`, BBOX −180,−90,180,90, 2048×1024, PNG + `TRANSPARENT=TRUE`) per product — no tile-matrix arithmetic — and decodes the colormapped PNG through the documented GIBS colormap (`cloudColormap.json`) into a cloud-opacity field: 0 = clear (transparent), 1 = cloud (white). No-data pixels stay transparent — never black. Availability is probed per date with a tiny GetMap (an unpublished date returns a fully transparent PNG); the newest sufficiently-complete date (opaque-fraction gates) is used, backtracking up to 4 days. The day mask covers the sunlit side; the IR-based night mask covers the rest, blended at the live terminator in the cloud shader (night clouds dimmed 0.35×). The stylized day/night Earth shader is untouched by the toggle; the overlay loads in the background so GIBS latency never delays the Earth itself. On failure the cloud layer stays hidden and the chip reports OFF.
 - `live-data` branch is fed by `update-live-feeds.yml` — fetch, trim to the row schema the parser reads (`row[:12]`, index positions MUST be preserved), commit to orphan branch, force-push. Raw CDN can cache a 404 for a few minutes after the first push.
 
 Feed status is a `Map` in main.ts (`setFeed(id, label, status, detail)`); chips update
@@ -117,7 +117,7 @@ All crons run on GitHub's servers — Igor's PC can be off. Manual run: `gh work
 1. `npm run build` (tsc + vite clean).
 2. `npm run dev` → verify in browser: `#sat-load-status` = "Catalog Loaded: N", feed chips show expected statuses, ticker shows tagged events, search → select → telemetry panel + reticle.
 3. Cables: search a station (e.g. "virginia beach") → panel shows real connected cables.
-4. Clouds: `Clouds` chip shows `LIVE — NASA GIBS … <date>`; no console warning about fallback.
+4. Clouds: `Clouds` chip shows `LIVE — NASA GIBS · SNPP · <date> · DAY+NIGHT`; toggle OFF removes only the cloud layer (stylized Earth unchanged); no console warning about fallback. `npm run verify:clouds` passes (live GIBS pipeline check: date walk, coverage gates, colormap decode, no opaque black, no-data transparency, dateline seam).
 5. Push to `main` → `gh run watch` the deploy → verify live bundle hash changed + `data/cables.json` serves 200.
 6. After changing feed code: `gh workflow run update-live-feeds.yml` and verify the `live-data` branch files + raw 200s.
 7. **Keep the docs current** — any change that affects behavior also updates `docs/architecture.md`, `docs/data-sources.md`, and the README's live-vs-curated notes.

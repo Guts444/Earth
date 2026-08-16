@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ATMOSPHERE_SCALE, EARTH_RADIUS } from '../config';
-import { loadLiveImagery } from './liveImagery';
+import { loadCloudLayer } from './clouds';
 
 // Relative paths (not root-absolute) so textures resolve under any deploy
 // base — dev server, /Earth/ on GitHub Pages, or file://.
@@ -39,9 +39,11 @@ export interface EarthSystem {
   sun: THREE.DirectionalLight;
   setSunDirection(dir: THREE.Vector3): void;
   setFullDaylight(active: boolean): void;
-  /** Toggle the live satellite day texture (real clouds) on/off. */
-  setLiveImagery(on: boolean): void;
-  imagery: { available: boolean; date: string | null; active: boolean };
+  /** Toggle the real cloud overlay (VIIRS cloud mask) on/off. */
+  setCloudsVisible(on: boolean): void;
+  clouds: { available: boolean; date: string | null; source: string | null; active: boolean };
+  /** Resolves when the cloud overlay load finishes (null = unavailable). */
+  cloudsReady: Promise<{ date: string; source: 'SNPP' | 'NOAA-20' } | null>;
   update(dt: number): void;
 }
 export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthSystem> {
@@ -51,19 +53,17 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
 
   const maxAniso = renderer.capabilities.getMaxAnisotropy();
 
-  // Stylized (cloud-free) base textures + live satellite imagery in parallel
-  const [baseMaps, live] = await Promise.all([
-    Promise.all([
-      loader.loadAsync(EARTH_DAY),
-      loader.loadAsync(EARTH_NIGHT),
-      loader.loadAsync(EARTH_SPEC),
-    ]),
-    loadLiveImagery().catch((err) => {
-      console.warn('GIBS live imagery unavailable — stylized map only:', err);
-      return null;
-    }),
+  // Stylized (cloud-free) base textures load first; the cloud overlay loads in
+  // the background so a slow/unreachable GIBS never delays the Earth itself.
+  const [dayMap, nightMap, specMap] = await Promise.all([
+    loader.loadAsync(EARTH_DAY),
+    loader.loadAsync(EARTH_NIGHT),
+    loader.loadAsync(EARTH_SPEC),
   ]);
-  const [dayMap, nightMap, specMap] = baseMaps;
+  const cloudPromise = loadCloudLayer(renderer).catch((err) => {
+    console.warn('GIBS cloud layer unavailable — stylized map only:', err);
+    return null;
+  });
 
   for (const tex of [dayMap, nightMap]) {
     tex.colorSpace = THREE.SRGBColorSpace;
@@ -71,7 +71,6 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
   }
   specMap.colorSpace = THREE.NoColorSpace;
   specMap.anisotropy = maxAniso;
-  if (live) live.texture.anisotropy = maxAniso;
 
   const currentSunDir = new THREE.Vector3(1, 0.2, 0.4).normalize();
 
@@ -81,9 +80,6 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
       dayMap: { value: dayMap },
       nightMap: { value: nightMap },
       specMap: { value: specMap },
-      // Live satellite day texture (real clouds); falls back to dayMap
-      liveMap: { value: live ? live.texture : dayMap },
-      liveMix: { value: live ? 1.0 : 0.0 },
       sunDirection: { value: currentSunDir.clone() },
       fullDaylight: { value: 0.0 },
     },
@@ -103,8 +99,6 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
       uniform sampler2D dayMap;
       uniform sampler2D nightMap;
       uniform sampler2D specMap;
-      uniform sampler2D liveMap;
-      uniform float liveMix;
       uniform vec3 sunDirection;
       uniform float fullDaylight;
       varying vec2 vUv;
@@ -118,10 +112,8 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
         float rawDayness = smoothstep(-0.16, 0.20, ndl);
         float dayness = mix(rawDayness, 1.0, fullDaylight);
 
-        // Live satellite imagery (real clouds) or the stylized cloud-free map
-        vec3 dayBase = texture2D(dayMap, vUv).rgb;
-        vec3 dayLive = texture2D(liveMap, vUv).rgb;
-        vec3 day = mix(dayBase, dayLive, liveMix);
+        // Stylized cloud-free base map (clouds are a separate overlay)
+        vec3 day = texture2D(dayMap, vUv).rgb;
         vec3 night = texture2D(nightMap, vUv).rgb * 1.25;
         float water = texture2D(specMap, vUv).r;
 
@@ -194,11 +186,24 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
   const sun = new THREE.DirectionalLight(0xffffff, 0);
   sun.position.set(5, 1, 2);
 
-  const imagery = {
-    available: live !== null,
-    date: live ? live.date : null,
-    active: live !== null, // default on when imagery loaded
+  const clouds = {
+    available: false,
+    date: null as string | null,
+    source: null as string | null,
+    wantVisible: true, // Clouds toggle defaults ON
+    active: false,
   };
+
+  // Attach the cloud overlay whenever it arrives (never blocks Earth init).
+  cloudPromise.then((layer) => {
+    if (!layer) return;
+    group.add(layer.mesh);
+    clouds.available = true;
+    clouds.date = layer.date;
+    clouds.source = layer.source;
+    clouds.active = clouds.wantVisible;
+    layer.mesh.visible = clouds.active;
+  });
 
   return {
     group,
@@ -208,17 +213,23 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
     setSunDirection(dir: THREE.Vector3) {
       currentSunDir.copy(dir);
       (earth.material as THREE.ShaderMaterial).uniforms.sunDirection.value.copy(dir);
+      cloudPromise.then((layer) => layer?.setSunDirection(dir));
       sun.position.copy(dir).multiplyScalar(10);
     },
     setFullDaylight(active: boolean) {
       (earth.material as THREE.ShaderMaterial).uniforms.fullDaylight.value = active ? 1.0 : 0.0;
+      cloudPromise.then((layer) => layer?.setFullDaylight(active));
     },
-    setLiveImagery(on: boolean) {
-      imagery.active = on && imagery.available;
-      (earth.material as THREE.ShaderMaterial).uniforms.liveMix.value =
-        imagery.active ? 1.0 : 0.0;
+    setCloudsVisible(on: boolean) {
+      clouds.wantVisible = on;
+      clouds.active = on && clouds.available;
+      cloudPromise.then((layer) => {
+        if (layer) layer.mesh.visible = clouds.active;
+      });
     },
-    imagery,
+    clouds,
+    /** Resolves when the cloud overlay load finishes (null = unavailable). */
+    cloudsReady: cloudPromise,
     update() {
       // nothing per-frame needed anymore (sun direction handled by setSunDirection)
     },

@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify:clouds": "node scripts/verify-clouds.mjs"
   },
   "devDependencies": {
     "@types/three": "^0.185.1",

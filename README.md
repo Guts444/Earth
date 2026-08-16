@@ -21,7 +21,7 @@ A high-performance, real-time 3D planetary intelligence platform and tactical op
 
 ## 🛰️ Monitored Signal Domains
 
-> **Live vs. curated:** satellites (CelesTrak), aviation (OpenSky ADS-B), earthquakes (USGS), tropical cyclones (NOAA NHC), cloud cover (NASA GIBS satellite imagery), aurora/space weather (NOAA SWPC), and launch schedules (Launch Library 2) ingest live feeds. Wildfires, volcanoes, DSN, asteroids, marine traffic, infrastructure, and EW zones are curated datasets with real-data provenance rendered with animated shaders. The bottom **DATA FEEDS** strip shows every feed's honest status (green = live, amber = simulated, blue = static snapshot, red = unreachable) — hover a chip for the source and freshness. The event ticker only carries sourced events (`[USGS]`, `[NHC]`, `[CelesTrak]`, …).
+> **Live vs. curated:** satellites (CelesTrak), aviation (OpenSky ADS-B), earthquakes (USGS), tropical cyclones (NOAA NHC), cloud cover (NASA GIBS VIIRS cloud mask), aurora/space weather (NOAA SWPC), and launch schedules (Launch Library 2) ingest live feeds. Wildfires, volcanoes, DSN, asteroids, marine traffic, infrastructure, and EW zones are curated datasets with real-data provenance rendered with animated shaders. The bottom **DATA FEEDS** strip shows every feed's honest status (green = live, amber = simulated, blue = static snapshot, red = unreachable) — hover a chip for the source and freshness. The event ticker only carries sourced events (`[USGS]`, `[NHC]`, `[CelesTrak]`, …).
 
 ### 1. Orbital Mechanics & Satellite Constellations
 - **Live CelesTrak Integration**: Propagates 11,000+ active satellites across Starlink, OneWeb, GPS/GLONASS/Galileo/BeiDou constellations, ISS, and scientific payloads.
@@ -47,7 +47,7 @@ A high-performance, real-time 3D planetary intelligence platform and tactical op
 
 ### 6. Geosphere Hazards & Climate
 - **USGS Earthquakes**: Real-time global seismic feeds with focal depth markers and magnitude-scaled epicenter rings.
-- **Real Satellite Cloud Cover**: The "Clouds" toggle swaps the day-side earth texture for live NASA GIBS (MODIS Terra) corrected-reflectance imagery — actual weather systems, refreshed per load (black-tile date probing; falls back to the stylized map, and the Clouds feed chip says which).
+- **Real Satellite Cloud Cover**: The "Clouds" toggle overlays a dedicated cloud sphere with **NASA GIBS VIIRS clear-sky-confidence** data (Suomi NPP, NOAA-20 fallback) — real cloud fields from the VIIRS cloud mask, day + dimmed night sides, refreshed per load. The stylized day/night Earth stays underneath; no-data is transparent (never black), and the Clouds feed chip shows source · imagery date · DAY+NIGHT (falls back to the cloud-free stylized map when GIBS is unreachable).
 - **Smithsonian GVP Volcanoes**: Active caldera monitoring along the Ring of Fire with standardized alert levels (🔴 Warning / 🟠 Watch / 🟡 Advisory / 🟢 Normal).
 - **NASA FIRMS Wildfires**: Thermal anomaly clusters with Fire Radiative Power (MW) and pulsating heat shaders.
 - **Tropical Cyclones**: Active hurricanes and typhoons with rotating spiral vortex shaders, central barometric pressure, and sustained wind telemetry.
