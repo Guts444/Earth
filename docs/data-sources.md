@@ -18,7 +18,7 @@ Status legend:
 | Cyclones | NOAA NHC | LIVE (SNAPSHOT) | 20 min | dev proxy → `live-data/nhc.json` → curated list | `src/geo/cyclones.ts` |
 | Space weather (Kp) | NOAA SWPC | LIVE | 15 min | direct (CORS-open) | `src/space/spaceWeather.ts` |
 | Launches | Launch Library 2 | LIVE | 30 min | direct (CORS-open) → curated pads | `src/space/launches.ts` |
-| Cloud cover | NASA GIBS (MODIS Terra) | LIVE (imagery) | daily imagery | GIBS tiles → cloud-alpha mask → static texture | `src/scene/clouds.ts` |
+| Cloud cover | NASA GIBS (MODIS Terra) | LIVE (imagery) | daily imagery | GIBS true-color tiles composited as the day-side texture (black-tile date probe, 3-day backtrack) → stylized map when unreachable | `src/scene/liveImagery.ts` |
 | Submarine cables | TeleGeography map | STATIC snapshot | weekly (CI) | same-origin `data/cables.json` → curated fallback | `src/infra/cables.ts` |
 | Marine traffic | curated fleet | STATIC + SIM movement | — | — | `src/marine/engine.ts` |
 | Volcanoes | curated | STATIC | — | — | `src/geo/volcanoes.ts` |

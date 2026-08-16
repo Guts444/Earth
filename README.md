@@ -47,7 +47,7 @@ A high-performance, real-time 3D planetary intelligence platform and tactical op
 
 ### 6. Geosphere Hazards & Climate
 - **USGS Earthquakes**: Real-time global seismic feeds with focal depth markers and magnitude-scaled epicenter rings.
-- **Real Satellite Cloud Cover**: Live cloud layer composited from NASA GIBS (MODIS Terra) daily imagery — actual weather systems, not a static texture (static fallback if GIBS is unreachable; the Clouds feed chip says which).
+- **Real Satellite Cloud Cover**: The "Clouds" toggle swaps the day-side earth texture for live NASA GIBS (MODIS Terra) corrected-reflectance imagery — actual weather systems, refreshed per load (black-tile date probing; falls back to the stylized map, and the Clouds feed chip says which).
 - **Smithsonian GVP Volcanoes**: Active caldera monitoring along the Ring of Fire with standardized alert levels (🔴 Warning / 🟠 Watch / 🟡 Advisory / 🟢 Normal).
 - **NASA FIRMS Wildfires**: Thermal anomaly clusters with Fire Radiative Power (MW) and pulsating heat shaders.
 - **Tropical Cyclones**: Active hurricanes and typhoons with rotating spiral vortex shaders, central barometric pressure, and sustained wind telemetry.

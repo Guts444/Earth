@@ -15,7 +15,7 @@
 | `src/config.ts` | Constants: scene radii, feed URLs + branch bases, satellite groups, domain types, cache TTLs |
 | `src/domains/registry.ts` | `DomainAdapter` interface + `createDomainLayers()` factory — one adapter per domain; main.ts drives everything generically |
 | `src/domains/pick.ts` | Shared **screen-space picking** helper (`pickPointsNearestCursor`) |
-| `src/scene/` | `earth.ts` (planet + atmosphere + clouds), `clouds.ts` (real GIBS satellite clouds), `satellites.ts` (11k-point cloud + SGP4 buffers), `overlays.ts` (orbits/footprints/markers), `grids.ts` (terminator/grids), `targetLock.ts` (fly-to/chase/reticle) |
+| `src/scene/` | `earth.ts` (planet + atmosphere + live imagery mix), `liveImagery.ts` (NASA GIBS tile composite), `satellites.ts` (11k-point cloud + SGP4 buffers), `overlays.ts` (orbits/footprints/markers), `grids.ts` (terminator/grids), `targetLock.ts` (fly-to/chase/reticle) |
 | `src/tle/catalog.ts` | TLE fetch chain: localStorage → dev proxy → `tle-data` branch → direct CelesTrak |
 | `src/orbit/propagator.ts` | Batched SGP4 propagation (500ms cadence) |
 | `src/space/` | `dsn.ts` + scene, `launches.ts` + scene (Launch Library 2), `asteroids.ts` + scene, `spaceWeather.ts` (SWPC Kp), `auroraScene.ts` |
@@ -79,7 +79,7 @@ dev/preview proxy (vite) → CI snapshot branch (raw.githubusercontent, CORS-ope
 - **NHC cyclones** (20 min): proxy → `live-data/nhc.json` → curated list. Same CORS story.
 - **USGS quakes** (60s), **SWPC Kp** (15 min), **LL2 launches** (30 min): CORS-open, direct fetch.
 - **Cables**: same-origin `data/cables.json` (weekly CI rebuild) → curated fallback.
-- **Clouds**: NASA GIBS tiles (CORS-open) composited into a cloud-alpha mask via diff against the base texture → static PNG fallback.
+- **Clouds (live satellite view)**: the "Clouds" overlay toggle swaps the day-side texture for a GIBS MODIS Terra corrected-reflectance composite (8×4 tiles @ z3 → 4096×2048, matching the stylized day texture). GIBS returns 200 + black tiles for unpublished dates, so `liveImagery.ts` probes tile content and backtracks up to 3 days. On failure the stylized map stays (chip OFF); there is no static cloud texture anymore.
 - `live-data` branch is fed by `update-live-feeds.yml` — fetch, trim to the row schema the parser reads (`row[:12]`, index positions MUST be preserved), commit to orphan branch, force-push. Raw CDN can cache a 404 for a few minutes after the first push.
 
 Feed status is a `Map` in main.ts (`setFeed(id, label, status, detail)`); chips update

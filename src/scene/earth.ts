@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ATMOSPHERE_SCALE, EARTH_RADIUS } from '../config';
-import { createClouds, type CloudSystem } from './clouds';
+import { loadLiveImagery } from './liveImagery';
 
 // Relative paths (not root-absolute) so textures resolve under any deploy
 // base — dev server, /Earth/ on GitHub Pages, or file://.
@@ -35,11 +35,13 @@ const atmosphereFragment = /* glsl */ `
 export interface EarthSystem {
   group: THREE.Group;
   earth: THREE.Mesh;
-  clouds: CloudSystem | null;
   atmosphere: THREE.Mesh;
   sun: THREE.DirectionalLight;
   setSunDirection(dir: THREE.Vector3): void;
   setFullDaylight(active: boolean): void;
+  /** Toggle the live satellite day texture (real clouds) on/off. */
+  setLiveImagery(on: boolean): void;
+  imagery: { available: boolean; date: string | null; active: boolean };
   update(dt: number): void;
 }
 export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthSystem> {
@@ -49,11 +51,19 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
 
   const maxAniso = renderer.capabilities.getMaxAnisotropy();
 
-  const [dayMap, nightMap, specMap] = await Promise.all([
-    loader.loadAsync(EARTH_DAY),
-    loader.loadAsync(EARTH_NIGHT),
-    loader.loadAsync(EARTH_SPEC),
+  // Stylized (cloud-free) base textures + live satellite imagery in parallel
+  const [baseMaps, live] = await Promise.all([
+    Promise.all([
+      loader.loadAsync(EARTH_DAY),
+      loader.loadAsync(EARTH_NIGHT),
+      loader.loadAsync(EARTH_SPEC),
+    ]),
+    loadLiveImagery().catch((err) => {
+      console.warn('GIBS live imagery unavailable — stylized map only:', err);
+      return null;
+    }),
   ]);
+  const [dayMap, nightMap, specMap] = baseMaps;
 
   for (const tex of [dayMap, nightMap]) {
     tex.colorSpace = THREE.SRGBColorSpace;
@@ -61,6 +71,7 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
   }
   specMap.colorSpace = THREE.NoColorSpace;
   specMap.anisotropy = maxAniso;
+  if (live) live.texture.anisotropy = maxAniso;
 
   const currentSunDir = new THREE.Vector3(1, 0.2, 0.4).normalize();
 
@@ -70,6 +81,9 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
       dayMap: { value: dayMap },
       nightMap: { value: nightMap },
       specMap: { value: specMap },
+      // Live satellite day texture (real clouds); falls back to dayMap
+      liveMap: { value: live ? live.texture : dayMap },
+      liveMix: { value: live ? 1.0 : 0.0 },
       sunDirection: { value: currentSunDir.clone() },
       fullDaylight: { value: 0.0 },
     },
@@ -89,6 +103,8 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
       uniform sampler2D dayMap;
       uniform sampler2D nightMap;
       uniform sampler2D specMap;
+      uniform sampler2D liveMap;
+      uniform float liveMix;
       uniform vec3 sunDirection;
       uniform float fullDaylight;
       varying vec2 vUv;
@@ -102,7 +118,10 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
         float rawDayness = smoothstep(-0.16, 0.20, ndl);
         float dayness = mix(rawDayness, 1.0, fullDaylight);
 
-        vec3 day = texture2D(dayMap, vUv).rgb;
+        // Live satellite imagery (real clouds) or the stylized cloud-free map
+        vec3 dayBase = texture2D(dayMap, vUv).rgb;
+        vec3 dayLive = texture2D(liveMap, vUv).rgb;
+        vec3 day = mix(dayBase, dayLive, liveMix);
         vec3 night = texture2D(nightMap, vUv).rgb * 1.25;
         float water = texture2D(specMap, vUv).r;
 
@@ -135,15 +154,6 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
     earthMat,
   );
   group.add(earth);
-
-  // Dynamic cloud layer
-  let clouds: CloudSystem | null = null;
-  try {
-    clouds = await createClouds();
-    group.add(clouds.mesh);
-  } catch (err) {
-    console.warn('Could not initialize clouds:', err);
-  }
 
   // Inner atmosphere glow
   const atmosphere = new THREE.Mesh(
@@ -184,10 +194,15 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
   const sun = new THREE.DirectionalLight(0xffffff, 0);
   sun.position.set(5, 1, 2);
 
+  const imagery = {
+    available: live !== null,
+    date: live ? live.date : null,
+    active: live !== null, // default on when imagery loaded
+  };
+
   return {
     group,
     earth,
-    clouds,
     atmosphere,
     sun,
     setSunDirection(dir: THREE.Vector3) {
@@ -197,14 +212,15 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
     },
     setFullDaylight(active: boolean) {
       (earth.material as THREE.ShaderMaterial).uniforms.fullDaylight.value = active ? 1.0 : 0.0;
-      if (clouds) {
-        clouds.setFullDaylight(active);
-      }
     },
-    update(dt: number) {
-      if (clouds) {
-        clouds.update(dt, currentSunDir);
-      }
+    setLiveImagery(on: boolean) {
+      imagery.active = on && imagery.available;
+      (earth.material as THREE.ShaderMaterial).uniforms.liveMix.value =
+        imagery.active ? 1.0 : 0.0;
+    },
+    imagery,
+    update() {
+      // nothing per-frame needed anymore (sun direction handled by setSunDirection)
     },
   };
 }

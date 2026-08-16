@@ -414,8 +414,8 @@ const commandUI = new CommandCenterUI({
   onOverlayToggle(overlay: OverlayType, checked: boolean) {
     if (overlay === 'daylight' && earthSystem) {
       earthSystem.setFullDaylight(checked);
-    } else if (overlay === 'clouds' && earthSystem?.clouds) {
-      earthSystem.clouds.setVisible(checked);
+    } else if (overlay === 'clouds' && earthSystem) {
+      earthSystem.setLiveImagery(checked);
     } else if (overlay === 'grid') {
       tacticalGrids.setGridVisible(checked);
     } else if (overlay === 'terminator') {
@@ -795,18 +795,16 @@ async function init(): Promise<void> {
   try {
     earthSystem = await createEarth(renderer);
     scene.add(earthSystem.group);
-    if (earthSystem.clouds) {
-      const c = earthSystem.clouds;
+    const img = earthSystem.imagery;
+    if (img.available) {
       setFeed(
         'clouds',
         'Clouds',
-        c.source === 'gibs' ? 'live' : 'static',
-        c.source === 'gibs'
-          ? `NASA GIBS · MODIS satellite imagery · ${c.imageryDate ?? 'today'}`
-          : 'static texture (GIBS unreachable)',
+        'live',
+        `NASA GIBS · MODIS satellite imagery · ${img.date ?? 'today'}`,
       );
     } else {
-      setFeed('clouds', 'Clouds', 'off', 'unavailable');
+      setFeed('clouds', 'Clouds', 'off', 'GIBS unreachable — stylized map only');
     }
   } catch (err) {
     console.error('Failed to initialize Earth system:', err);
