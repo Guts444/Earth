@@ -42,7 +42,6 @@ export interface EarthSystem {
   setFullDaylight(active: boolean): void;
   update(dt: number): void;
 }
-
 export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthSystem> {
   const group = new THREE.Group();
   const loader = new THREE.TextureLoader();

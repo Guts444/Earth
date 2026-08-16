@@ -12,9 +12,16 @@ A high-performance, real-time 3D planetary intelligence platform and tactical op
 
 ---
 
+## 📚 Project Docs
+
+- **[`docs/architecture.md`](docs/architecture.md)** — how the app is built: module map, the domain-registry pattern, screen-space picking, data flow, CI/CD, and the test/deploy checklist. **Start here** when picking the project up (contributor or new session).
+- **[`docs/data-sources.md`](docs/data-sources.md)** — every data feed: source, freshness, live-vs-static status, and the fallback chains that keep the app honest when an upstream is down.
+
+---
+
 ## 🛰️ Monitored Signal Domains
 
-> **Live vs. curated:** satellites (CelesTrak), aviation (OpenSky ADS-B), earthquakes (USGS), tropical cyclones (NOAA NHC), aurora/space weather (NOAA SWPC), and launch schedules (Launch Library 2) ingest live feeds. Wildfires, volcanoes, DSN, asteroids, marine traffic, infrastructure, and EW zones are curated datasets with real-data provenance rendered with animated shaders. The bottom **DATA FEEDS** strip shows every feed's honest status (green = live, amber = simulated, blue = static snapshot, red = unreachable) — hover a chip for the source and freshness. The event ticker only carries sourced events (`[USGS]`, `[NHC]`, `[CelesTrak]`, …).
+> **Live vs. curated:** satellites (CelesTrak), aviation (OpenSky ADS-B), earthquakes (USGS), tropical cyclones (NOAA NHC), cloud cover (NASA GIBS satellite imagery), aurora/space weather (NOAA SWPC), and launch schedules (Launch Library 2) ingest live feeds. Wildfires, volcanoes, DSN, asteroids, marine traffic, infrastructure, and EW zones are curated datasets with real-data provenance rendered with animated shaders. The bottom **DATA FEEDS** strip shows every feed's honest status (green = live, amber = simulated, blue = static snapshot, red = unreachable) — hover a chip for the source and freshness. The event ticker only carries sourced events (`[USGS]`, `[NHC]`, `[CelesTrak]`, …).
 
 ### 1. Orbital Mechanics & Satellite Constellations
 - **Live CelesTrak Integration**: Propagates 11,000+ active satellites across Starlink, OneWeb, GPS/GLONASS/Galileo/BeiDou constellations, ISS, and scientific payloads.
@@ -40,6 +47,7 @@ A high-performance, real-time 3D planetary intelligence platform and tactical op
 
 ### 6. Geosphere Hazards & Climate
 - **USGS Earthquakes**: Real-time global seismic feeds with focal depth markers and magnitude-scaled epicenter rings.
+- **Real Satellite Cloud Cover**: Live cloud layer composited from NASA GIBS (MODIS Terra) daily imagery — actual weather systems, not a static texture (static fallback if GIBS is unreachable; the Clouds feed chip says which).
 - **Smithsonian GVP Volcanoes**: Active caldera monitoring along the Ring of Fire with standardized alert levels (🔴 Warning / 🟠 Watch / 🟡 Advisory / 🟢 Normal).
 - **NASA FIRMS Wildfires**: Thermal anomaly clusters with Fire Radiative Power (MW) and pulsating heat shaders.
 - **Tropical Cyclones**: Active hurricanes and typhoons with rotating spiral vortex shaders, central barometric pressure, and sustained wind telemetry.

@@ -495,6 +495,7 @@ function setFeed(id: string, label: string, status: FeedStatus, detail: string):
 setFeed('marine', 'Marine', 'static', 'curated fleet + simulated movement');
 setFeed('geo', 'Geo', 'static', 'curated: volcanoes, wildfires, DSN, asteroids, nuclear, GPS jam');
 setFeed('cables', 'Cables', 'off', 'dataset loading…');
+setFeed('clouds', 'Clouds', 'off', 'loading…');
 setFeed('sats', 'Sats', 'off', 'connecting…');
 setFeed('quakes', 'Quakes', 'off', 'connecting…');
 setFeed('flights', 'Flights', 'off', 'connecting…');
@@ -794,8 +795,22 @@ async function init(): Promise<void> {
   try {
     earthSystem = await createEarth(renderer);
     scene.add(earthSystem.group);
+    if (earthSystem.clouds) {
+      const c = earthSystem.clouds;
+      setFeed(
+        'clouds',
+        'Clouds',
+        c.source === 'gibs' ? 'live' : 'static',
+        c.source === 'gibs'
+          ? `NASA GIBS · MODIS satellite imagery · ${c.imageryDate ?? 'today'}`
+          : 'static texture (GIBS unreachable)',
+      );
+    } else {
+      setFeed('clouds', 'Clouds', 'off', 'unavailable');
+    }
   } catch (err) {
     console.error('Failed to initialize Earth system:', err);
+    setFeed('clouds', 'Clouds', 'off', 'unavailable');
   }
 
   // Start rendering immediately
