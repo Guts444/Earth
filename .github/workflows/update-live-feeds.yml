@@ -57,11 +57,9 @@ jobs:
           git config user.name "earth-command-bot"
           git config user.email "actions@users.noreply.github.com"
           git checkout --orphan live-data
-          git rm -rf --quiet .
-          # stage whatever succeeded; a failed fetch keeps the previous file
-          for f in states.json nhc.json; do
-            [ -s "$f" ] && mv "$f" .
-          done
+          git rm -rf --quiet . || true
+          # fetched files are untracked and already in the worktree root;
+          # a failed fetch keeps the previous file on the branch
           git add states.json nhc.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "no changes — branch untouched"
