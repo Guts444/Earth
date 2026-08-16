@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { pickPointsNearestCursor, type PickHit } from '../domains/pick';
 import type { MarineCategory } from '../config';
 import type { VesselState } from './engine';
 
@@ -211,12 +212,12 @@ export class MarineScene {
     this.sizeAttr.needsUpdate = true;
   }
 
-  pick(raycaster: THREE.Raycaster, camera: THREE.Camera): number {
-    if (!this.isVisible || this.vessels.length === 0) return -1;
-    const camDist = camera.position.length();
-    raycaster.params.Points = { threshold: 0.025 * (camDist / 3) };
-    const hits = raycaster.intersectObject(this.points, false);
-    if (hits.length === 0) return -1;
-    return hits[0].index ?? -1;
+  pick(
+    raycaster: THREE.Raycaster,
+    camera: THREE.Camera,
+    pointerNdc: THREE.Vector2,
+  ): PickHit | null {
+    if (!this.isVisible || this.vessels.length === 0) return null;
+    return pickPointsNearestCursor(raycaster, camera, pointerNdc, this.points);
   }
 }

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { pickPointsNearestCursor, type PickHit } from '../domains/pick';
 import { NEAR_EARTH_ASTEROIDS, type AsteroidRecord } from './asteroids';
 
 const asteroidVertex = /* glsl */ `
@@ -122,12 +123,12 @@ export class AsteroidsScene {
     attr.needsUpdate = true;
   }
 
-  pick(raycaster: THREE.Raycaster, camera: THREE.Camera): number {
-    if (!this.isVisible) return -1;
-    const camDist = camera.position.length();
-    raycaster.params.Points = { threshold: 0.06 * (camDist / 3) };
-    const hits = raycaster.intersectObject(this.pointsMesh, false);
-    if (hits.length === 0) return -1;
-    return hits[0].index ?? -1;
+  pick(
+    raycaster: THREE.Raycaster,
+    camera: THREE.Camera,
+    pointerNdc: THREE.Vector2,
+  ): PickHit | null {
+    if (!this.isVisible) return null;
+    return pickPointsNearestCursor(raycaster, camera, pointerNdc, this.pointsMesh);
   }
 }

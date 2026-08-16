@@ -30,6 +30,7 @@ import type { GpsJamScene } from '../tactical/gpsJamScene';
 import type { SatelliteCloud } from '../scene/satellites';
 import type { SelectionOverlays } from '../scene/overlays';
 import { formatTMinus } from '../space/launches';
+import type { PickHit } from './pick';
 
 export interface SearchResult {
   domain: DomainType;
@@ -40,8 +41,12 @@ export interface SearchResult {
 
 export interface DomainAdapter {
   id: DomainType;
-  /** Ray-pick an entity; returns index or -1. */
-  pick(raycaster: THREE.Raycaster, camera: THREE.Camera): number;
+  /** Pick the entity visually nearest the cursor; null when nothing hit. */
+  pick(
+    raycaster: THREE.Raycaster,
+    camera: THREE.Camera,
+    pointerNdc: THREE.Vector2,
+  ): PickHit | null;
   count(): number;
   highlight(index: number): void;
   setVisible(visible: boolean): void;
@@ -82,7 +87,7 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
 
   const satellite: DomainAdapter = {
     id: 'satellite',
-    pick: (r, c) => d.satCloud.pick(r, c),
+    pick: (r, c, p) => d.satCloud.pick(r, c, p),
     count: () => d.satCloud.count,
     highlight: (i) => d.satCloud.highlightIndex(i),
     setVisible: () => {}, // satellite visibility is driven by group toggles
@@ -149,7 +154,7 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
 
   const flight: DomainAdapter = {
     id: 'flight',
-    pick: (r, c) => d.flightScene.pick(r, c),
+    pick: (r, c, p) => d.flightScene.pick(r, c, p),
     count: () => d.flightEngine.count,
     highlight: (i) => d.flightScene.highlight(i),
     setVisible: () => {}, // category filters drive flight visibility
@@ -198,7 +203,7 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
 
   const marine: DomainAdapter = {
     id: 'marine',
-    pick: (r, c) => d.marineScene.pick(r, c),
+    pick: (r, c, p) => d.marineScene.pick(r, c, p),
     count: () => d.marineEngine.count,
     highlight: (i) => d.marineScene.highlight(i),
     setVisible: () => {},
@@ -246,7 +251,7 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
 
   const earthquake: DomainAdapter = {
     id: 'earthquake',
-    pick: (r, c) => d.earthquakeSystem.pick(r, c),
+    pick: (r, c, p) => d.earthquakeSystem.pick(r, c, p),
     count: () => d.earthquakeSystem.list.length,
     highlight: (i) => d.earthquakeSystem.highlight(i),
     setVisible: (v) => d.earthquakeSystem.setVisible(v),
@@ -285,7 +290,7 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
 
   const cable: DomainAdapter = {
     id: 'cable',
-    pick: (r, c) => d.cablesScene.pick(r, c),
+    pick: (r, c, p) => d.cablesScene.pick(r, c, p),
     count: () => LANDING_STATIONS.length,
     highlight: (i) => d.cablesScene.highlight(i),
     setVisible: (v) => d.cablesScene.setVisible(v),
@@ -326,7 +331,7 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
 
   const nuclear: DomainAdapter = {
     id: 'nuclear',
-    pick: (r, c) => d.nuclearScene.pick(r, c),
+    pick: (r, c, p) => d.nuclearScene.pick(r, c, p),
     count: () => NUCLEAR_PLANTS.length,
     highlight: (i) => d.nuclearScene.highlight(i),
     setVisible: (v) => d.nuclearScene.setVisible(v),
@@ -368,7 +373,7 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
 
   const dsn: DomainAdapter = {
     id: 'dsn',
-    pick: (r, c) => d.dsnScene.pick(r, c),
+    pick: (r, c, p) => d.dsnScene.pick(r, c, p),
     count: () => DSN_COMPLEXES.length,
     highlight: (i) => d.dsnScene.highlight(i),
     setVisible: (v) => d.dsnScene.setVisible(v),
@@ -411,7 +416,7 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
 
   const asteroid: DomainAdapter = {
     id: 'asteroid',
-    pick: (r, c) => d.asteroidsScene.pick(r, c),
+    pick: (r, c, p) => d.asteroidsScene.pick(r, c, p),
     count: () => d.asteroidsScene.list.length,
     highlight: (i) => d.asteroidsScene.highlight(i),
     setVisible: (v) => d.asteroidsScene.setVisible(v),
@@ -454,7 +459,7 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
 
   const launch: DomainAdapter = {
     id: 'launch',
-    pick: (r, c) => d.launchesScene.pick(r, c),
+    pick: (r, c, p) => d.launchesScene.pick(r, c, p),
     count: () => d.launchesScene.list.length,
     highlight: (i) => d.launchesScene.highlight(i),
     setVisible: (v) => d.launchesScene.setVisible(v),
@@ -509,7 +514,7 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
 
   const volcano: DomainAdapter = {
     id: 'volcano',
-    pick: (r, c) => d.volcanoesScene.pick(r, c),
+    pick: (r, c, p) => d.volcanoesScene.pick(r, c, p),
     count: () => d.volcanoesScene.list.length,
     highlight: (i) => d.volcanoesScene.highlight(i),
     setVisible: (v) => d.volcanoesScene.setVisible(v),
@@ -552,7 +557,7 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
 
   const wildfire: DomainAdapter = {
     id: 'wildfire',
-    pick: (r, c) => d.wildfiresScene.pick(r, c),
+    pick: (r, c, p) => d.wildfiresScene.pick(r, c, p),
     count: () => d.wildfiresScene.list.length,
     highlight: (i) => d.wildfiresScene.highlight(i),
     setVisible: (v) => d.wildfiresScene.setVisible(v),
@@ -595,7 +600,7 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
 
   const cyclone: DomainAdapter = {
     id: 'cyclone',
-    pick: (r, c) => d.cyclonesScene.pick(r, c),
+    pick: (r, c, p) => d.cyclonesScene.pick(r, c, p),
     count: () => d.cyclonesScene.list.length,
     highlight: (i) => d.cyclonesScene.highlight(i),
     setVisible: (v) => d.cyclonesScene.setVisible(v),
@@ -638,7 +643,7 @@ export function createDomainLayers(d: DomainDeps): DomainAdapter[] {
 
   const gpsjam: DomainAdapter = {
     id: 'gpsjam',
-    pick: (r, c) => d.gpsJamScene.pick(r, c),
+    pick: (r, c, p) => d.gpsJamScene.pick(r, c, p),
     count: () => d.gpsJamScene.list.length,
     highlight: (i) => d.gpsJamScene.highlight(i),
     setVisible: (v) => d.gpsJamScene.setVisible(v),

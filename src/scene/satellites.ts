@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { pickPointsNearestCursor, type PickHit } from '../domains/pick';
 import type { CatalogSatellite } from '../tle/catalog';
 import { GROUP_BY_ID, type SatGroupId } from '../config';
 
@@ -196,21 +197,14 @@ export class SatelliteCloud {
     this.posAttr.needsUpdate = true;
   }
 
-  /** Ray-pick nearest satellite in NDC-ish screen space. */
+  /** Pick the satellite visually nearest the cursor (true screen space). */
   pick(
     raycaster: THREE.Raycaster,
     camera: THREE.Camera,
-    thresholdUnits = 0.035,
-  ): number {
-    if (this.sats.length === 0) return -1;
-
-    // Adaptive threshold based on camera distance
-    const camDist = camera.position.length();
-    raycaster.params.Points = { threshold: thresholdUnits * (camDist / 3) };
-
-    const hits = raycaster.intersectObject(this.points, false);
-    if (hits.length === 0) return -1;
-    return hits[0].index ?? -1;
+    pointerNdc: THREE.Vector2,
+  ): PickHit | null {
+    if (this.sats.length === 0) return null;
+    return pickPointsNearestCursor(raycaster, camera, pointerNdc, this.points);
   }
 
   getDisplayPosition(index: number, target: THREE.Vector3): THREE.Vector3 {

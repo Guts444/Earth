@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { pickPointsNearestCursor, type PickHit } from '../domains/pick';
 import { geoToOceanFloor, LANDING_STATIONS, SUBMARINE_CABLES, type LandingStationNode } from './cables';
 
 export class SubmarineCablesScene {
@@ -79,12 +80,12 @@ export class SubmarineCablesScene {
     }
   }
 
-  pick(raycaster: THREE.Raycaster, camera: THREE.Camera): number {
-    if (!this.isVisible) return -1;
-    const camDist = camera.position.length();
-    raycaster.params.Points = { threshold: 0.04 * (camDist / 3) };
-    const hits = raycaster.intersectObject(this.stationsMesh, false);
-    if (hits.length === 0) return -1;
-    return hits[0].index ?? -1;
+  pick(
+    raycaster: THREE.Raycaster,
+    camera: THREE.Camera,
+    pointerNdc: THREE.Vector2,
+  ): PickHit | null {
+    if (!this.isVisible) return null;
+    return pickPointsNearestCursor(raycaster, camera, pointerNdc, this.stationsMesh);
   }
 }

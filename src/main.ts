@@ -39,6 +39,7 @@ import { TacticalGrids } from './scene/grids';
 import { SelectionOverlays } from './scene/overlays';
 import { SatelliteCloud } from './scene/satellites';
 import { TargetLockController } from './scene/targetLock';
+import type { PickHit } from './domains/pick';
 import { fetchLiveCyclones, setLiveCyclones } from './geo/cyclones';
 import {
   applyUpcomingLaunches,
@@ -228,6 +229,15 @@ const pointer = new THREE.Vector2();
 let dragMoved = false;
 let pointerDownPos = { x: 0, y: 0 };
 
+/** Max cursor distance (CSS px) for a click to count as a hit. */
+const PICK_RADIUS_PX = 10;
+/**
+ * Tolerance (scene units) for surface entities sitting exactly on the globe
+ * when testing occlusion: a target is behind the Earth when its along-ray
+ * distance exceeds the globe hit by more than this.
+ */
+const PICK_OCCLUSION_EPS = 1e-3;
+
 // FPS
 let fpsFrames = 0;
 let fpsLast = performance.now();
@@ -342,16 +352,35 @@ function onPointerUp(e: MouseEvent): void {
 
   raycaster.setFromCamera(pointer, camera);
 
-  // Layers are ordered by pick priority (asteroids first, sats last).
+  // The globe is solid: anything behind its near side is not selectable.
+  let tEarth = Infinity;
+  if (earthSystem) {
+    const earthHits = raycaster.intersectObject(earthSystem.earth, false);
+    if (earthHits.length > 0) tEarth = earthHits[0].distance;
+  }
+
+  // Click radius in squared-NDC terms (NDC spans the canvas height).
+  const ndcRadius = PICK_RADIUS_PX / (rect.height / 2);
+  const maxDist2 = ndcRadius * ndcRadius;
+
+  // Collect the best candidate from every layer, then pick the global
+  // winner — the dot visually nearest the cursor, not the first layer
+  // that happens to have any hit.
+  let best: { layer: DomainAdapter; hit: PickHit } | null = null;
   for (const layer of layers) {
-    const idx = layer.pick(raycaster, camera);
-    if (idx >= 0) {
-      selectVia(layer, idx);
-      return;
+    const hit = layer.pick(raycaster, camera, pointer);
+    if (!hit || hit.dist2 > maxDist2) continue;
+    if (hit.rayDist > tEarth + PICK_OCCLUSION_EPS) continue;
+    if (!best || hit.dist2 < best.hit.dist2) {
+      best = { layer, hit };
     }
   }
 
-  clearSelection();
+  if (best) {
+    selectVia(best.layer, best.hit.index);
+  } else {
+    clearSelection();
+  }
 }
 
 canvas.addEventListener('mousedown', onPointerDown);
