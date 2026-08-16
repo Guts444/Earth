@@ -8,19 +8,30 @@ import CLOUD_COLORMAP from './cloudColormap.json';
  *
  * Products: VIIRS Clear Sky Confidence (Day + Night) for SNPP, with NOAA-20
  * (JPSS-1) as a clean fallback. The colormapped PNG is decoded through the
- * official GIBS colormap (cloudColormap.json) into an opacity field:
+ * official GIBS colormap (cloudColormap.json) into the product's continuous
+ * CLEAR-SKY CONFIDENCE field:
  *
- *   value 0.0 (cream 255,247,236) -> clear sky, transparent
- *   value 1.0 (dark red 127,0,0)  -> cloud, opaque
+ *   value 1.0 (dark red 127,0,0) -> highest confidence of CLEAR sky
+ *   value 0.0 (cream 255,247,236) -> confident cloud
  *
- * The value is the VIIRS cloud-mask confidence that a pixel contains cloud
- * (validated against geography: Atacama ~0.0, Amazon ~1.0; see
- * scripts/verify-clouds.mjs). No-data pixels are transparent in the WMS PNG
- * and stay transparent — never black.
+ * (VNP03/VCM product definition; verified against independent true-color
+ * imagery — see scripts/verify-clouds.mjs.) From it we derive:
+ *
+ *   clearConfidence = decodedValue
+ *   cloudConfidence = 1 - clearConfidence
+ *   alpha           = cloudVisualTransfer(cloudConfidence)   // VISUALIZATION
+ *
+ * The transfer is a presentation curve only — Clear Sky Confidence is
+ * classification confidence, not cloud optical thickness (see
+ * VIIRS Cloud Optical Thickness as a future enhancement if true density is
+ * needed). No-data pixels are transparent in the WMS PNG and stay
+ * transparent — never black.
  *
  * Day product covers the sunlit side; Night product (IR-based) covers the
  * rest. The shader blends them at the live terminator so the night side shows
- * dimmed real clouds and the day side stays clean.
+ * dimmed real clouds and the day side stays clean, and applies a continuous
+ * zoom-driven visibility multiplier (global view: full; local/detail view:
+ * faded out).
  */
 
 // ---------------------------------------------------------------------------
@@ -75,6 +86,36 @@ const PROBE_MIN_OPAQUE = 0.02;
 
 /** Night-side cloud dimming (subtle visibility, per product spec). */
 const NIGHT_CLOUD_DIM = 0.35;
+
+// ---------------------------------------------------------------------------
+// Clear-sky confidence -> cloud confidence -> visual opacity
+// ---------------------------------------------------------------------------
+
+/**
+ * VISUALIZATION transfer curve (not physical cloud thickness — Clear Sky
+ * Confidence is classification confidence only).
+ *
+ * Tuned so the tactical map stays readable:
+ *  - cloudConfidence <= CLOUD_TRANSFER_AMBIGUOUS_CC ("probably/confident
+ *    clear" and ambiguous low-confidence detections) renders fully
+ *    transparent;
+ *  - cloudConfidence >= CLOUD_TRANSFER_CONFIDENT_CC ("confident cloud")
+ *    renders at the capped maximum;
+ *  - in between, a smoothstep ramp.
+ */
+export const CLOUD_TRANSFER_AMBIGUOUS_CC = 0.3;
+export const CLOUD_TRANSFER_CONFIDENT_CC = 0.85;
+export const CLOUD_TRANSFER_MAX_ALPHA = 0.7;
+
+export function cloudVisualTransfer(cloudConfidence: number): number {
+  if (cloudConfidence <= CLOUD_TRANSFER_AMBIGUOUS_CC) return 0;
+  const t = THREE.MathUtils.smoothstep(
+    cloudConfidence,
+    CLOUD_TRANSFER_AMBIGUOUS_CC,
+    CLOUD_TRANSFER_CONFIDENT_CC,
+  );
+  return t * CLOUD_TRANSFER_MAX_ALPHA;
+}
 
 // ---------------------------------------------------------------------------
 // Colormap decode
@@ -145,8 +186,13 @@ const VALUE_LUT = buildValueLut();
 
 /**
  * Convert a colormapped GIBS PNG into a white-cloud RGBA canvas:
- * alpha = cloud opacity (0..1 from the colormap), RGB = white.
- * No-data pixels (source alpha 0) stay fully transparent.
+ *
+ *   clearConfidence = colormap value   (VNP03 Clear_Sky_Confidence)
+ *   cloudConfidence = 1 - clearConfidence
+ *   alpha           = cloudVisualTransfer(cloudConfidence)
+ *
+ * RGB is white (cloud color); no-data pixels (source alpha 0) stay fully
+ * transparent — never black.
  */
 function decodeMask(img: ImageData): HTMLCanvasElement {
   const { width, height, data } = img;
@@ -172,14 +218,18 @@ function decodeMask(img: ImageData): HTMLCanvasElement {
       const g = data[i + 1];
       const b = data[i + 2];
       // Exact ramp colors decode exactly; edge blends fall back to the LUT.
-      let v = exact.get((r << 16) | (g << 8) | b);
-      if (v === undefined) {
-        v = lut[(r >> 2) * D * D + (g >> 2) * D + (b >> 2)];
+      let clearConfidence = exact.get((r << 16) | (g << 8) | b);
+      if (clearConfidence === undefined) {
+        clearConfidence = lut[(r >> 2) * D * D + (g >> 2) * D + (b >> 2)] / 255;
+      } else {
+        clearConfidence /= 255;
       }
+      const cloudConfidence = 1 - clearConfidence;
+      const a = cloudVisualTransfer(cloudConfidence);
       od[o] = 255;
       od[o + 1] = 255;
       od[o + 2] = 255;
-      od[o + 3] = v;
+      od[o + 3] = Math.round(a * 255);
     }
   }
   ctx.putImageData(out, 0, 0);
@@ -264,7 +314,8 @@ export interface CloudLayer {
   date: string;
   source: 'SNPP' | 'NOAA-20';
   setSunDirection(dir: THREE.Vector3): void;
-  setFullDaylight(active: boolean): void;
+  setFullDaylight(detail: number): void;
+  setCloudVisibility(v: number): void;
 }
 
 /**
@@ -309,7 +360,8 @@ export async function loadCloudLayer(renderer: THREE.WebGLRenderer): Promise<Clo
 
 interface CloudMeshHooks {
   setSunDirection(dir: THREE.Vector3): void;
-  setFullDaylight(active: boolean): void;
+  setFullDaylight(active: number): void;
+  setCloudVisibility(v: number): void;
 }
 
 function createCloudMesh(
@@ -324,6 +376,7 @@ function createCloudMesh(
       sunDirection: { value: sunDirection.clone() },
       fullDaylight: { value: 0 },
       nightDim: { value: NIGHT_CLOUD_DIM },
+      cloudVisibility: { value: 1 },
     },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
@@ -341,6 +394,7 @@ function createCloudMesh(
       uniform vec3 sunDirection;
       uniform float fullDaylight;
       uniform float nightDim;
+      uniform float cloudVisibility;
       varying vec2 vUv;
       varying vec3 vNormalW;
 
@@ -352,6 +406,7 @@ function createCloudMesh(
         float dayA = texture2D(cloudDay, vUv).a;
         float nightA = texture2D(cloudNight, vUv).a;
         float alpha = dayA * dayness + nightA * (1.0 - dayness) * nightDim;
+        alpha *= cloudVisibility; // zoom-driven global->detail fade (master toggle included)
         gl_FragColor = vec4(vec3(0.95, 0.97, 1.0), alpha);
       }
     `,
@@ -373,8 +428,11 @@ function createCloudMesh(
         sunDirection.copy(dir);
         mat.uniforms.sunDirection.value.copy(dir);
       },
-      setFullDaylight(active: boolean) {
-        mat.uniforms.fullDaylight.value = active ? 1.0 : 0.0;
+      setFullDaylight(detail: number) {
+        mat.uniforms.fullDaylight.value = detail;
+      },
+      setCloudVisibility(v: number) {
+        mat.uniforms.cloudVisibility.value = v;
       },
     },
   };

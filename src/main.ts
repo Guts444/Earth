@@ -4,6 +4,8 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   CAMERA_FAR,
   CAMERA_NEAR,
+  DETAIL_BLEND_FAR,
+  DETAIL_BLEND_NEAR,
   PROPAGATE_INTERVAL_MS,
   SAT_GROUPS,
   type DomainType,
@@ -412,9 +414,7 @@ const commandUI = new CommandCenterUI({
     earthquakeSystem.setMinMag(minMag);
   },
   onOverlayToggle(overlay: OverlayType, checked: boolean) {
-    if (overlay === 'daylight' && earthSystem) {
-      earthSystem.setFullDaylight(checked);
-    } else if (overlay === 'clouds' && earthSystem) {
+    if (overlay === 'clouds' && earthSystem) {
       earthSystem.setCloudsVisible(checked);
     } else if (overlay === 'grid') {
       tacticalGrids.setGridVisible(checked);
@@ -753,6 +753,15 @@ function animate(now: number): void {
   );
   targetLock.update(deltaWallSec);
   controls.update();
+
+  // Automatic global -> detail blend from camera distance (clouds fade out,
+  // night side lifts to full daylight as the camera approaches the surface).
+  // Time simulation and the solar vector are untouched.
+  if (earthSystem) {
+    const camDist = camera.position.length();
+    const detail = 1 - THREE.MathUtils.smoothstep(camDist, DETAIL_BLEND_NEAR, DETAIL_BLEND_FAR);
+    earthSystem.setDetail(detail);
+  }
 
   // Keep telemetry panel synchronized with moving target
   if (currentSelectedTarget) {

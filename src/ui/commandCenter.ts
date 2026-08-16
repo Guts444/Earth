@@ -19,7 +19,6 @@ export type OverlayType =
   | 'terminator'
   | 'orbits'
   | 'footprints'
-  | 'daylight'
   | 'quakes'
   | 'volcanoes'
   | 'wildfires'
@@ -193,7 +192,6 @@ export class CommandCenterUI {
 
     // 4. All Overlays and Signal Layers
     const overlayInputs: Array<{ id: string; key: OverlayType }> = [
-      { id: 'toggle-full-daylight', key: 'daylight' },
       { id: 'toggle-clouds', key: 'clouds' },
       { id: 'toggle-grid', key: 'grid' },
       { id: 'toggle-terminator', key: 'terminator' },

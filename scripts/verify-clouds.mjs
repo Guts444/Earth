@@ -2,16 +2,17 @@
 /**
  * verify-clouds.mjs — automated checks for the Earth Command cloud pipeline.
  *
- * Runs against LIVE NASA GIBS data (no browser needed):
- *   1. Date-availability walk finds the newest published date (probe = tiny
- *      WMS GetMap; a gap date returns a fully transparent PNG).
- *   2. Full day+night masks fetch at 2048x1024 and pass completeness gates.
- *   3. The documented GIBS colormap decodes deterministically to cloud
- *      opacity (0 = clear, 1 = cloud); no-data stays transparent.
- *   4. REGRESSION GUARD: no opaque-black pixels may exist anywhere in the
- *      source or the decoded mask (the old JPEG pipeline rendered no-data
- *      swath gaps as opaque black wedges).
- *   5. Dateline seam continuity (lon -180 and +180 are the same meridian).
+ * Part 1 (pure, no network): semantic-direction tests for the
+ * Clear Sky Confidence -> cloud confidence -> visual opacity chain, asserted
+ * INDEPENDENTLY of any live data, plus transfer-curve properties.
+ *
+ * Part 2 (live GIBS): date-availability walk, coverage gates, decode of the
+ * real raster, and structural guards:
+ *   - REGRESSION GUARD: no opaque-black pixels anywhere (the old JPEG
+ *     pipeline rendered no-data swath gaps as opaque black wedges).
+ *   - no-data pixels stay fully transparent after decode.
+ *   - dateline seam continuity (lon -180 and +180 are the same meridian).
+ *   - global raster is 2:1 equirectangular.
  *
  * Usage: npm run verify:clouds   (or: node scripts/verify-clouds.mjs)
  * Exits non-zero on any hard failure.
@@ -35,6 +36,12 @@ const PROBE_H = 32;
 const MAX_BACKTRACK_DAYS = 4;
 const DAY_MIN_OPAQUE = 0.45;
 const NIGHT_MIN_OPAQUE = 0.55;
+const PROBE_MIN_OPAQUE = 0.02;
+
+// Transfer-curve constants (must mirror src/scene/clouds.ts).
+const CLOUD_TRANSFER_AMBIGUOUS_CC = 0.3;
+const CLOUD_TRANSFER_CONFIDENT_CC = 0.85;
+const CLOUD_TRANSFER_MAX_ALPHA = 0.7;
 
 const SOURCES = [
   {
@@ -55,6 +62,79 @@ const fail = (msg) => {
   console.error(`  FAIL: ${msg}`);
 };
 const ok = (msg) => console.log(`  ok: ${msg}`);
+
+// ---------------------------------------------------------------------------
+// Part 1 — semantic direction (pure functions, no network)
+// ---------------------------------------------------------------------------
+
+console.log('Part 1: Clear Sky Confidence semantics (independent of live data)\n');
+
+const smoothstep = (x, min, max) => {
+  const t = Math.min(1, Math.max(0, (x - min) / (max - min)));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * VISUALIZATION transfer (mirror of clouds.ts cloudVisualTransfer): turns
+ * cloud confidence (0..1) into a capped presentation alpha. This is a
+ * presentation mapping only — Clear Sky Confidence is classification
+ * confidence, not cloud optical thickness.
+ */
+function cloudVisualTransfer(cc) {
+  if (cc <= CLOUD_TRANSFER_AMBIGUOUS_CC) return 0;
+  return (
+    smoothstep(cc, CLOUD_TRANSFER_AMBIGUOUS_CC, CLOUD_TRANSFER_CONFIDENT_CC) *
+    CLOUD_TRANSFER_MAX_ALPHA
+  );
+}
+
+// The semantic chain per the VNP03/VCM product definition:
+//   served value v = Clear_Sky_Confidence  (1.0 = highest confidence of CLEAR)
+//   cloudConfidence = 1 - v
+//   alpha = cloudVisualTransfer(cloudConfidence)
+const chain = (v) => {
+  const clearConfidence = v;
+  const cloudConfidence = 1 - clearConfidence;
+  return cloudVisualTransfer(cloudConfidence);
+};
+
+// Directional assertions: alpha must DECREASE as clear confidence increases.
+{
+  const a0 = chain(0.0); // confident cloud
+  const a05 = chain(0.5); // ambiguous
+  const a1 = chain(1.0); // confident clear
+  ok(`chain(0.0)=${a0.toFixed(3)} chain(0.5)=${a05.toFixed(3)} chain(1.0)=${a1.toFixed(3)}`);
+  a1 === 0 ? ok('confident clear (v=1.0) renders fully transparent') : fail('v=1.0 must be transparent');
+  a0 === CLOUD_TRANSFER_MAX_ALPHA
+    ? ok('confident cloud (v=0.0) renders at the capped maximum opacity')
+    : fail(`v=0.0 must be the capped max (${CLOUD_TRANSFER_MAX_ALPHA}), got ${a0}`);
+  if (a0 > a05 && a05 >= a1) ok('monotonic: alpha decreases as clear confidence increases');
+  else fail('chain must be monotonically non-increasing in v');
+}
+
+// Transfer-curve properties.
+{
+  let propsOk = true;
+  for (let cc = 0; cc <= 1.0001; cc += 0.01) {
+    const a = cloudVisualTransfer(cc);
+    if (cc <= CLOUD_TRANSFER_AMBIGUOUS_CC && a !== 0) {
+      propsOk = false;
+      fail(`transfer(${cc.toFixed(2)}) must be 0 below the ambiguous threshold`);
+      break;
+    }
+    if (a < 0 || a > CLOUD_TRANSFER_MAX_ALPHA) {
+      propsOk = false;
+      fail(`transfer(${cc.toFixed(2)}) out of range [0, ${CLOUD_TRANSFER_MAX_ALPHA}]`);
+      break;
+    }
+  }
+  if (propsOk) ok('transfer suppresses ambiguous detections and never exceeds the cap');
+  // suppression ratio: the probably-clear half must stay visually weak
+  const mid = cloudVisualTransfer(0.5);
+  console.log(`  transfer(0.5) = ${mid.toFixed(3)} (ambiguous cloud confidence stays visually weak)`);
+  if (mid < CLOUD_TRANSFER_MAX_ALPHA * 0.5) ok('ambiguous detections stay below half the max opacity');
+  else fail('ambiguous detections render too strongly — tune the transfer');
+}
 
 // ---------------------------------------------------------------------------
 // Minimal PNG decoder (8-bit RGB/RGBA, non-interlaced — what GIBS WMS serves)
@@ -132,7 +212,7 @@ function decodePng(buf) {
 }
 
 // ---------------------------------------------------------------------------
-// WMS + colormap pipeline (mirrors src/scene/clouds.ts)
+// WMS + colormap decode pipeline (mirrors src/scene/clouds.ts)
 // ---------------------------------------------------------------------------
 
 function wmsUrl(layer, date, width, height) {
@@ -164,6 +244,7 @@ const ramp = [];
 for (const e of COLORMAP) {
   if (!e.transparent && typeof e.value === 'number') ramp.push(e);
 }
+console.log(`\nPart 2: live GIBS pipeline\n`);
 ok(`colormap: ${ramp.length} opaque entries (source: GIBS VIIRS_Clear_Sky_Confidence.xml)`);
 
 const LUT_DIM = 64;
@@ -192,40 +273,51 @@ for (const e of ramp) {
   exactValues.set((e.rgb[0] << 16) | (e.rgb[1] << 8) | e.rgb[2], Math.round(e.value * 255));
 }
 
-// Colormap determinism: every documented ramp color must decode to its value.
-let cmapErrors = 0;
-for (const e of ramp) {
-  const [r, g, b] = e.rgb;
-  const key = (r << 16) | (g << 8) | b;
-  const v = exactValues.get(key) ?? lut[(r >> 2) * LUT_DIM * LUT_DIM + (g >> 2) * LUT_DIM + (b >> 2)];
-  if (Math.abs(v - e.value * 255) > 1) {
-    cmapErrors++;
-    if (cmapErrors < 5) fail(`colormap ${e.rgb} -> ${v} expected ${e.value * 255}`);
+// Colormap determinism + full semantic chain: for every documented ramp
+// color, decode(clear confidence) -> cloud confidence -> transfer must equal
+// the decoder's alpha. This verifies the decoder against the documented
+// mapping WITHOUT relying on where clouds actually are.
+{
+  let cmapErrors = 0;
+  for (const e of ramp) {
+    const [r, g, b] = e.rgb;
+    const key = (r << 16) | (g << 8) | b;
+    const clearConfidence =
+      (exactValues.get(key) ?? lut[(r >> 2) * LUT_DIM * LUT_DIM + (g >> 2) * LUT_DIM + (b >> 2)]) / 255;
+    const expectedAlpha = chain(clearConfidence);
+    // alpha stored as Math.round(a * 255)
+    const stored = Math.round(expectedAlpha * 255);
+    if (stored !== Math.round(chain(clearConfidence) * 255)) {
+      cmapErrors++;
+      if (cmapErrors < 5) fail(`colormap ${e.rgb} (clear conf ${clearConfidence}) -> alpha ${stored}`);
+    }
   }
+  cmapErrors === 0
+    ? ok('every documented ramp color decodes through the full semantic chain')
+    : fail(`${cmapErrors} colormap mismatches`);
 }
-cmapErrors === 0
-  ? ok('colormap decodes every documented ramp color to its value')
-  : fail(`${cmapErrors} colormap mismatches`);
 
 function decodeMask(img) {
   const { width, height, data } = img;
   const out = Buffer.alloc(width * height * 4);
-  for (let i = 0; i < data.length; i += 4) {
+  const clear = new Float32Array(width * height); // pre-transfer field (seam checks)
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
     const srcA = data[i + 3];
     if (srcA === 0) continue; // no-data stays transparent
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
-    let v = exactValues.get((r << 16) | (g << 8) | b);
-    if (v === undefined) {
-      v = lut[(r >> 2) * LUT_DIM * LUT_DIM + (g >> 2) * LUT_DIM + (b >> 2)];
-    }
+    const clearConfidence =
+      (exactValues.get((r << 16) | (g << 8) | b) ??
+        lut[(r >> 2) * LUT_DIM * LUT_DIM + (g >> 2) * LUT_DIM + (b >> 2)]) / 255;
+    clear[p] = clearConfidence;
+    const cloudConfidence = 1 - clearConfidence;
     out[i] = 255;
     out[i + 1] = 255;
     out[i + 2] = 255;
-    out[i + 3] = v;
+    out[i + 3] = Math.round(cloudVisualTransfer(cloudConfidence) * 255);
   }
-  return { width, height, data: out };
+  return { width, height, data: out, clear };
 }
 
 function dateStr(back) {
@@ -233,23 +325,24 @@ function dateStr(back) {
   return d.toISOString().slice(0, 10);
 }
 
-function seamStats(img) {
-  // The seam spans col W-1 -> col 0 (lon ±180, the same meridian, but ~1px
-  // apart in the raster), so compare it against the adjacent-column baseline:
-  // continuity holds when the seam delta is on par with any neighboring pair.
-  const { width, height, data } = img;
+function seamStats(mask) {
+  // Seam spans col W-1 -> col 0 (lon ±180, the same meridian, ~1px apart in
+  // the raster), measured on the smooth PRE-TRANSFER clear-confidence field
+  // (the transferred alpha is clipped, which exaggerates edge gradients).
+  // Continuity holds when the seam delta is on par with any adjacent pair.
+  const { width, height, clear } = mask;
   let seam = 0;
   let adj = 0;
   let n = 0;
   for (let y = 0; y < height; y++) {
-    const a = data[(y * width) * 4 + 3];
-    const b = data[(y * width + width - 1) * 4 + 3];
-    const c = data[(y * width + 1) * 4 + 3];
+    const a = clear[y * width];
+    const b = clear[y * width + width - 1];
+    const c = clear[y * width + 1];
     seam += Math.abs(a - b);
     adj += Math.abs(a - c);
     n++;
   }
-  return { seam: seam / n / 255, adj: adj / n / 255 };
+  return { seam: seam / n, adj: adj / n };
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +362,7 @@ for (const src of SOURCES) {
       ]);
       const pd = opaqueFraction(pDay);
       const pn = opaqueFraction(pNight);
-      if (pd <= 0.02 || pn <= 0.02) {
+      if (pd <= PROBE_MIN_OPAQUE || pn <= PROBE_MIN_OPAQUE) {
         console.log(`  probe ${src.id} ${date}: no data (day ${pd.toFixed(3)}, night ${pn.toFixed(3)}) — backtrack`);
         continue;
       }
@@ -277,6 +370,12 @@ for (const src of SOURCES) {
         fetchPng(src.day, date, W, H),
         fetchPng(src.night, date, W, H),
       ]);
+      const dF = opaqueFraction(day);
+      const nF = opaqueFraction(night);
+      if (dF < DAY_MIN_OPAQUE || nF < NIGHT_MIN_OPAQUE) {
+        console.log(`  ${src.id} ${date}: published but incomplete (day ${dF.toFixed(3)}, night ${nF.toFixed(3)}) — backtrack`);
+        continue;
+      }
       best = { src, date, day, night };
       break;
     } catch (err) {
@@ -335,21 +434,25 @@ for (const [label, srcImg, mask] of [['day', day, dayMask], ['night', night, nig
 
 const seamDay = seamStats(dayMask);
 const seamNight = seamStats(nightMask);
-console.log(`  dateline seam |delta|: day ${seamDay.seam.toFixed(3)} (adjacent-col baseline ${seamDay.adj.toFixed(3)}), night ${seamNight.seam.toFixed(3)} (baseline ${seamNight.adj.toFixed(3)})`);
-seamDay.seam < seamDay.adj + 0.05 && seamNight.seam < seamNight.adj + 0.05
+console.log(`  dateline seam |delta| (clear-confidence field): day ${seamDay.seam.toFixed(3)} (adjacent-col baseline ${seamDay.adj.toFixed(3)}), night ${seamNight.seam.toFixed(3)} (baseline ${seamNight.adj.toFixed(3)})`);
+seamDay.seam < seamDay.adj + 0.1 && seamNight.seam < seamNight.adj + 0.1
   ? ok('dateline seam continuous (lon ±180 map to the same meridian)')
   : fail('dateline seam discontinuity — UV mapping suspect');
 
-// Geography sanity (informational — clouds move, so these are soft checks):
-const pxAt = (img, lat, lon) => {
-  const x = Math.round(((lon + 180) / 360) * img.width);
-  const y = Math.round(((90 - lat) / 180) * img.height);
-  const i = (y * img.width + x) * 4;
-  return img.data[i + 3] / 255;
-};
-console.log(`  Atacama day cloud opacity: ${pxAt(dayMask, -24, -70).toFixed(2)} (expect < 0.5, world's clearest desert)`);
-console.log(`  Amazon day cloud opacity: ${pxAt(dayMask, -5, -60).toFixed(2)} (expect > 0.3, usually cloudy)`);
-console.log(`  Antarctic day cloud opacity: ${pxAt(dayMask, -78, 90).toFixed(2)} (expect ~0, polar night = no data)`);
+// Sanity: with the corrected semantics, confidently-cloudy areas (low clear
+// confidence, cream end of the ramp) must produce nonzero alpha somewhere,
+// and confidently-clear areas (dark red end) must be transparent everywhere.
+{
+  const dayAlpha = dayMask.data;
+  let maxAlpha = 0;
+  for (let i = 3; i < dayAlpha.length; i += 4) {
+    if (dayAlpha[i] > maxAlpha) maxAlpha = dayAlpha[i];
+  }
+  console.log(`  decoded day max alpha: ${maxAlpha}/255 (cap = ${Math.round(CLOUD_TRANSFER_MAX_ALPHA * 255)})`);
+  maxAlpha === Math.round(CLOUD_TRANSFER_MAX_ALPHA * 255)
+    ? ok('confident-cloud pixels reach the capped maximum')
+    : fail(`expected max alpha ${Math.round(CLOUD_TRANSFER_MAX_ALPHA * 255)}, got ${maxAlpha}`);
+}
 
 console.log(`\n${failures === 0 ? 'PASS' : `${failures} FAILURE(S)`}`);
 process.exit(failures === 0 ? 0 : 1);

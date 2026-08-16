@@ -38,8 +38,14 @@ export interface EarthSystem {
   atmosphere: THREE.Mesh;
   sun: THREE.DirectionalLight;
   setSunDirection(dir: THREE.Vector3): void;
-  setFullDaylight(active: boolean): void;
-  /** Toggle the real cloud overlay (VIIRS cloud mask) on/off. */
+  /**
+   * Continuous 0..1 global->detail blend driven by camera distance (see
+   * DETAIL_BLEND_* in config.ts): 0 = global view (real day/night, clouds
+   * fully available), 1 = local/detail view (full daylight, clouds faded).
+   * Does not touch the time simulation or the solar vector.
+   */
+  setDetail(detail: number): void;
+  /** Toggle the real cloud overlay (VIIRS cloud mask) on/off (master enable). */
   setCloudsVisible(on: boolean): void;
   clouds: { available: boolean; date: string | null; source: string | null; active: boolean };
   /** Resolves when the cloud overlay load finishes (null = unavailable). */
@@ -202,7 +208,9 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
     clouds.date = layer.date;
     clouds.source = layer.source;
     clouds.active = clouds.wantVisible;
-    layer.mesh.visible = clouds.active;
+    // Visibility is driven by the cloudVisibility uniform (master toggle ×
+    // zoom fade), so the mesh stays rendered and the shader handles opacity.
+    layer.mesh.visible = true;
   });
 
   return {
@@ -216,15 +224,22 @@ export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthS
       cloudPromise.then((layer) => layer?.setSunDirection(dir));
       sun.position.copy(dir).multiplyScalar(10);
     },
-    setFullDaylight(active: boolean) {
-      (earth.material as THREE.ShaderMaterial).uniforms.fullDaylight.value = active ? 1.0 : 0.0;
-      cloudPromise.then((layer) => layer?.setFullDaylight(active));
+    setDetail(detail: number) {
+      (earth.material as THREE.ShaderMaterial).uniforms.fullDaylight.value = detail;
+      cloudPromise.then((layer) => {
+        layer?.setFullDaylight(detail);
+        layer?.setCloudVisibility(clouds.wantVisible ? 1 - detail : 0);
+      });
     },
     setCloudsVisible(on: boolean) {
       clouds.wantVisible = on;
       clouds.active = on && clouds.available;
       cloudPromise.then((layer) => {
-        if (layer) layer.mesh.visible = clouds.active;
+        if (layer) {
+          layer.mesh.visible = true; // visibility is driven by the shader uniform
+          const detail = (earth.material as THREE.ShaderMaterial).uniforms.fullDaylight.value as number;
+          layer.setCloudVisibility(on ? 1 - detail : 0);
+        }
       });
     },
     clouds,

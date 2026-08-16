@@ -4,6 +4,17 @@ export const KM_TO_UNITS = 1 / EARTH_RADIUS_KM;
 export const EARTH_RADIUS = 1;
 export const ATMOSPHERE_SCALE = 1.018;
 export const CLOUDS_SCALE = 1.004;
+
+/**
+ * Camera-distance thresholds (in earth radii) for the automatic global →
+ * detail blend: `detail = 1 - smoothstep(DETAIL_BLEND_NEAR, DETAIL_BLEND_FAR, d)`.
+ * - d >= DETAIL_BLEND_FAR (global view): real day/night, clouds fully visible
+ * - d <= DETAIL_BLEND_NEAR (local/detail view): full daylight, clouds gone
+ * - in between: smooth continuous transition (no hard pop)
+ * Camera minDistance is 1.2, default view is ~4.05, hotspots fly to 1.4–2.8.
+ */
+export const DETAIL_BLEND_NEAR = 1.2;
+export const DETAIL_BLEND_FAR = 3.4;
 export const CAMERA_NEAR = 0.01;
 export const CAMERA_FAR = 350;
 
