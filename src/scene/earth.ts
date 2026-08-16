@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ATMOSPHERE_SCALE, EARTH_RADIUS } from '../config';
-import { loadCloudLayer } from './clouds';
+import { loadCloudLayer, type CloudLayer } from './clouds';
 
 // Relative paths (not root-absolute) so textures resolve under any deploy
 // base — dev server, /Earth/ on GitHub Pages, or file://.
@@ -49,7 +49,7 @@ export interface EarthSystem {
   setCloudsVisible(on: boolean): void;
   clouds: { available: boolean; date: string | null; source: string | null; active: boolean };
   /** Resolves when the cloud overlay load finishes (null = unavailable). */
-  cloudsReady: Promise<{ date: string; source: 'SNPP' | 'NOAA-20' } | null>;
+  cloudsReady: Promise<CloudLayer | null>;
   update(dt: number): void;
 }
 export async function createEarth(renderer: THREE.WebGLRenderer): Promise<EarthSystem> {

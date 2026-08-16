@@ -9,12 +9,13 @@ export const CLOUDS_SCALE = 1.004;
  * Camera-distance thresholds (in earth radii) for the automatic global →
  * detail blend: `detail = 1 - smoothstep(DETAIL_BLEND_NEAR, DETAIL_BLEND_FAR, d)`.
  * - d >= DETAIL_BLEND_FAR (global view): real day/night, clouds fully visible
- * - d <= DETAIL_BLEND_NEAR (local/detail view): full daylight, clouds gone
- * - in between: smooth continuous transition (no hard pop)
- * Camera minDistance is 1.2, default view is ~4.05, hotspots fly to 1.4–2.8.
+ * - d <= DETAIL_BLEND_NEAR (regional/local view): full daylight, clouds gone
+ * - in between: a NARROW smooth continuous transition (no hard pop)
+ * Camera minDistance is 1.2, maxDistance 4.2, default view ~4.05 (≈ maximum
+ * zoom-out), hotspots fly to 1.4–2.8 (all below NEAR → full detail).
  */
-export const DETAIL_BLEND_NEAR = 1.2;
-export const DETAIL_BLEND_FAR = 3.4;
+export const DETAIL_BLEND_NEAR = 3.0;
+export const DETAIL_BLEND_FAR = 3.8;
 export const CAMERA_NEAR = 0.01;
 export const CAMERA_FAR = 350;
 

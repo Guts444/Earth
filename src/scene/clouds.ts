@@ -6,10 +6,11 @@ import CLOUD_COLORMAP from './cloudColormap.json';
  * Real cloud layer — NASA GIBS VIIRS cloud-mask products, fetched as a single
  * global equirectangular WMS raster (no tile-matrix arithmetic).
  *
- * Products: VIIRS Clear Sky Confidence (Day + Night) for SNPP, with NOAA-20
- * (JPSS-1) as a clean fallback. The colormapped PNG is decoded through the
- * official GIBS colormap (cloudColormap.json) into the product's continuous
- * CLEAR-SKY CONFIDENCE field:
+ * Products: VIIRS Clear Sky Confidence (Day + Night). SNPP is the PRIMARY
+ * source; NOAA-20 provides per-pixel gap fill (see below) and remains a
+ * whole-source fallback when SNPP has no usable date. The colormapped PNG is
+ * decoded through the official GIBS colormap (cloudColormap.json) into the
+ * product's continuous CLEAR-SKY CONFIDENCE field:
  *
  *   value 1.0 (dark red 127,0,0) -> highest confidence of CLEAR sky
  *   value 0.0 (cream 255,247,236) -> confident cloud
@@ -27,9 +28,25 @@ import CLOUD_COLORMAP from './cloudColormap.json';
  * needed). No-data pixels are transparent in the WMS PNG and stay
  * transparent — never black.
  *
+ * Per-pixel source fallback: a single-date raster can pass the overall
+ * opaque-fraction gate yet still contain large contiguous no-data swath gaps
+ * (overpasses not yet processed). To close those, the same-date NOAA-20
+ * raster is merged PER PIXEL for each product independently:
+ *
+ *   if SNPP pixel has valid source data -> use SNPP
+ *   else if NOAA-20 pixel has valid source data -> use NOAA-20
+ *   else -> transparent
+ *
+ * NOAA-20 fills ONLY SNPP no-data pixels — detections are never unioned
+ * where both sources observed (different overpass times would inflate
+ * coverage). If the same-date NOAA-20 product is unavailable, the remaining
+ * gap stays transparent rather than fabricating data. The merge happens on
+ * the pre-transfer clear-confidence field, so the clear-sky-confidence
+ * semantics and the visualization transfer are unchanged by it.
+ *
  * Day product covers the sunlit side; Night product (IR-based) covers the
  * rest. The shader blends them at the live terminator so the night side shows
- * dimmed real clouds and the day side stays clean, and applies a continuous
+ * faint real clouds and the day side stays clean, and applies a continuous
  * zoom-driven visibility multiplier (global view: full; local/detail view:
  * faded out).
  */
@@ -84,8 +101,8 @@ const NIGHT_MIN_OPAQUE = 0.55;
 /** Probe counts as "has data" above this opaque fraction (empty = no data). */
 const PROBE_MIN_OPAQUE = 0.02;
 
-/** Night-side cloud dimming (subtle visibility, per product spec). */
-const NIGHT_CLOUD_DIM = 0.35;
+/** Night-side cloud dimming — faint context, never a dominant texture. */
+const NIGHT_CLOUD_DIM = 0.12;
 
 // ---------------------------------------------------------------------------
 // Clear-sky confidence -> cloud confidence -> visual opacity
@@ -95,7 +112,8 @@ const NIGHT_CLOUD_DIM = 0.35;
  * VISUALIZATION transfer curve (not physical cloud thickness — Clear Sky
  * Confidence is classification confidence only).
  *
- * Tuned so the tactical map stays readable:
+ * Tuned so the tactical map stays readable and clouds feel like an overlay,
+ * not a replacement surface:
  *  - cloudConfidence <= CLOUD_TRANSFER_AMBIGUOUS_CC ("probably/confident
  *    clear" and ambiguous low-confidence detections) renders fully
  *    transparent;
@@ -103,9 +121,9 @@ const NIGHT_CLOUD_DIM = 0.35;
  *    renders at the capped maximum;
  *  - in between, a smoothstep ramp.
  */
-export const CLOUD_TRANSFER_AMBIGUOUS_CC = 0.3;
-export const CLOUD_TRANSFER_CONFIDENT_CC = 0.85;
-export const CLOUD_TRANSFER_MAX_ALPHA = 0.7;
+export const CLOUD_TRANSFER_AMBIGUOUS_CC = 0.45;
+export const CLOUD_TRANSFER_CONFIDENT_CC = 0.9;
+export const CLOUD_TRANSFER_MAX_ALPHA = 0.35;
 
 export function cloudVisualTransfer(cloudConfidence: number): number {
   if (cloudConfidence <= CLOUD_TRANSFER_AMBIGUOUS_CC) return 0;
@@ -184,53 +202,100 @@ function buildValueLut(): Uint8Array {
 }
 const VALUE_LUT = buildValueLut();
 
+// ---------------------------------------------------------------------------
+// Clear-confidence field: decode -> merge -> transfer
+// ---------------------------------------------------------------------------
+
+interface ConfField {
+  width: number;
+  height: number;
+  /** Continuous clear-sky confidence per pixel; NaN = no source data. */
+  conf: Float32Array;
+}
+
 /**
- * Convert a colormapped GIBS PNG into a white-cloud RGBA canvas:
+ * Decode a colormapped GIBS PNG into the continuous clear-sky-confidence
+ * field (NaN = no-data, source alpha 0). No transfer yet — source merging
+ * happens on this pre-transfer field so semantics are source-independent.
+ */
+function extractClearConfidence(img: ImageData): ConfField {
+  const { width, height, data } = img;
+  const conf = new Float32Array(width * height);
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    const srcA = data[i + 3];
+    if (srcA === 0) {
+      conf[p] = NaN; // no data
+      continue;
+    }
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    // Exact ramp colors decode exactly; edge blends fall back to the LUT.
+    let clearConfidence = EXACT_VALUES.get((r << 16) | (g << 8) | b);
+    clearConfidence =
+      clearConfidence === undefined
+        ? VALUE_LUT[(r >> 2) * LUT_DIM * LUT_DIM + (g >> 2) * LUT_DIM + (b >> 2)] / 255
+        : clearConfidence / 255;
+    conf[p] = clearConfidence;
+  }
+  return { width, height, conf };
+}
+
+/**
+ * Per-pixel source fallback: SNPP wins wherever it has valid data; NOAA-20
+ * fills ONLY SNPP no-data pixels. Detections are never unioned/merged where
+ * both sources observed (different overpass times must not inflate
+ * coverage). Applied to the day and night masks independently.
+ */
+function mergeClearConfidence(
+  primary: ConfField,
+  fallback: ConfField | null,
+): { field: ConfField; filled: number; valid: number } {
+  const { width, height, conf: p } = primary;
+  const f = fallback?.conf;
+  const merged = new Float32Array(width * height);
+  let valid = 0;
+  let filled = 0;
+  for (let i = 0; i < merged.length; i++) {
+    if (!Number.isNaN(p[i])) {
+      merged[i] = p[i]; // SNPP observed: always wins
+      valid++;
+    } else if (f && !Number.isNaN(f[i])) {
+      merged[i] = f[i]; // SNPP no-data: NOAA-20 fills the gap
+      filled++;
+      valid++;
+    } else {
+      merged[i] = NaN; // no data in either source: stay transparent
+    }
+  }
+  return { field: { width, height, conf: merged }, filled, valid };
+}
+
+/**
+ * Pre-transfer clear-confidence field -> white-cloud RGBA canvas:
  *
- *   clearConfidence = colormap value   (VNP03 Clear_Sky_Confidence)
  *   cloudConfidence = 1 - clearConfidence
  *   alpha           = cloudVisualTransfer(cloudConfidence)
  *
- * RGB is white (cloud color); no-data pixels (source alpha 0) stay fully
- * transparent — never black.
+ * RGB is white (cloud color); no-data pixels stay fully transparent —
+ * never black.
  */
-function decodeMask(img: ImageData): HTMLCanvasElement {
-  const { width, height, data } = img;
+function confidenceToCanvas(field: ConfField): HTMLCanvasElement {
+  const { width, height, conf } = field;
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d')!;
   const out = ctx.createImageData(width, height);
   const od = out.data;
-  const lut = VALUE_LUT;
-  const exact = EXACT_VALUES;
-  const D = LUT_DIM;
-  for (let i = 0; i < data.length; i += 4) {
-    const srcA = data[i + 3];
-    const o = i;
-    if (srcA === 0) {
-      od[o] = 0;
-      od[o + 1] = 0;
-      od[o + 2] = 0;
-      od[o + 3] = 0;
-    } else {
-      const r = data[i];
-      const g = data[i + 1];
-      const b = data[i + 2];
-      // Exact ramp colors decode exactly; edge blends fall back to the LUT.
-      let clearConfidence = exact.get((r << 16) | (g << 8) | b);
-      if (clearConfidence === undefined) {
-        clearConfidence = lut[(r >> 2) * D * D + (g >> 2) * D + (b >> 2)] / 255;
-      } else {
-        clearConfidence /= 255;
-      }
-      const cloudConfidence = 1 - clearConfidence;
-      const a = cloudVisualTransfer(cloudConfidence);
-      od[o] = 255;
-      od[o + 1] = 255;
-      od[o + 2] = 255;
-      od[o + 3] = Math.round(a * 255);
-    }
+  for (let p = 0, o = 0; p < conf.length; p++, o += 4) {
+    const c = conf[p];
+    if (Number.isNaN(c)) continue; // transparent (createImageData zeroes alpha)
+    const a = cloudVisualTransfer(1 - c);
+    od[o] = 255;
+    od[o + 1] = 255;
+    od[o + 2] = 255;
+    od[o + 3] = Math.round(a * 255);
   }
   ctx.putImageData(out, 0, 0);
   return canvas;
@@ -305,14 +370,44 @@ async function probeDate(
   return opaqueFraction(day) > PROBE_MIN_OPAQUE && opaqueFraction(night) > PROBE_MIN_OPAQUE;
 }
 
+/**
+ * Best-effort same-date NOAA-20 gap-fill fields. A fetch failure or an
+ * unpublished date (fully transparent raster) simply contributes no fill
+ * pixels — the SNPP gaps stay transparent, never fabricated.
+ */
+async function fetchFillFields(
+  date: string,
+): Promise<{ day: ConfField; night: ConfField } | null> {
+  const n20 = CLOUD_SOURCES.find((s) => s.id === 'NOAA-20')!;
+  try {
+    const [dayImg, nightImg] = await Promise.all([
+      fetchPngImageData(wmsUrl(n20.day, date, CLOUD_TEX_W, CLOUD_TEX_H)),
+      fetchPngImageData(wmsUrl(n20.night, date, CLOUD_TEX_W, CLOUD_TEX_H)),
+    ]);
+    return { day: extractClearConfidence(dayImg), night: extractClearConfidence(nightImg) };
+  } catch (err) {
+    console.warn(`NOAA-20 gap fill (${date}) unavailable — SNPP gaps stay transparent:`, err);
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+export interface CloudFillInfo {
+  /** NOAA-20 same-date per-pixel gap fill contributed usable pixels. */
+  used: boolean;
+  /** Fraction of merged coverage that came from the fill source. */
+  dayFrac: number;
+  nightFrac: number;
+}
 
 export interface CloudLayer {
   mesh: THREE.Mesh;
   date: string;
   source: 'SNPP' | 'NOAA-20';
+  fill: CloudFillInfo;
   setSunDirection(dir: THREE.Vector3): void;
   setFullDaylight(detail: number): void;
   setCloudVisibility(v: number): void;
@@ -320,8 +415,11 @@ export interface CloudLayer {
 
 /**
  * Fetch day+night cloud masks from the newest sufficiently-complete published
- * date. Tries SNPP first, then NOAA-20. Returns null when no source/date
- * yields usable data (caller keeps the stylized Earth, clouds hidden).
+ * date. SNPP is primary; its no-data gaps are filled per pixel from the
+ * same-date NOAA-20 raster (day and night independently). NOAA-20 remains a
+ * whole-source fallback if SNPP has no usable date. Returns null when no
+ * source/date yields usable data (caller keeps the stylized Earth, clouds
+ * hidden).
  */
 export async function loadCloudLayer(renderer: THREE.WebGLRenderer): Promise<CloudLayer | null> {
   for (const src of CLOUD_SOURCES) {
@@ -339,8 +437,31 @@ export async function loadCloudLayer(renderer: THREE.WebGLRenderer): Promise<Clo
         ) {
           continue; // published but still incomplete — try the day before
         }
-        const dayTex = new THREE.CanvasTexture(decodeMask(dayImg));
-        const nightTex = new THREE.CanvasTexture(decodeMask(nightImg));
+
+        let dayField = extractClearConfidence(dayImg);
+        let nightField = extractClearConfidence(nightImg);
+        let fill: CloudFillInfo = { used: false, dayFrac: 0, nightFrac: 0 };
+
+        // Per-pixel gap fill (SNPP primary only — never "fill" with itself).
+        if (src.id === 'SNPP') {
+          const fillFields = await fetchFillFields(date);
+          if (fillFields) {
+            const dayMerge = mergeClearConfidence(dayField, fillFields.day);
+            const nightMerge = mergeClearConfidence(nightField, fillFields.night);
+            if (dayMerge.filled > 0 || nightMerge.filled > 0) {
+              fill = {
+                used: true,
+                dayFrac: dayMerge.valid > 0 ? dayMerge.filled / dayMerge.valid : 0,
+                nightFrac: nightMerge.valid > 0 ? nightMerge.filled / nightMerge.valid : 0,
+              };
+              dayField = dayMerge.field;
+              nightField = nightMerge.field;
+            }
+          }
+        }
+
+        const dayTex = new THREE.CanvasTexture(confidenceToCanvas(dayField));
+        const nightTex = new THREE.CanvasTexture(confidenceToCanvas(nightField));
         const maxAniso = renderer.capabilities.getMaxAnisotropy();
         for (const tex of [dayTex, nightTex]) {
           tex.colorSpace = THREE.NoColorSpace; // opacity data, not color
@@ -349,7 +470,7 @@ export async function loadCloudLayer(renderer: THREE.WebGLRenderer): Promise<Clo
           tex.anisotropy = maxAniso;
         }
         const layer = createCloudMesh(dayTex, nightTex);
-        return { mesh: layer.mesh, date, source: src.id, ...layer.hooks };
+        return { mesh: layer.mesh, date, source: src.id, fill, ...layer.hooks };
       } catch (err) {
         console.warn(`GIBS cloud mask (${src.id}, ${date}) failed:`, err);
       }

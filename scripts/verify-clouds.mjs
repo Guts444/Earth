@@ -7,10 +7,14 @@
  * INDEPENDENTLY of any live data, plus transfer-curve properties.
  *
  * Part 2 (live GIBS): date-availability walk, coverage gates, decode of the
- * real raster, and structural guards:
+ * real raster, per-pixel NOAA-20 gap fill, and structural guards:
  *   - REGRESSION GUARD: no opaque-black pixels anywhere (the old JPEG
  *     pipeline rendered no-data swath gaps as opaque black wedges).
  *   - no-data pixels stay fully transparent after decode.
+ *   - per-pixel fallback: SNPP wins wherever it has data; NOAA-20 fills ONLY
+ *     SNPP no-data pixels (never a union of detections).
+ *   - contiguous no-data column strips shrink under the fill (when NOAA-20
+ *     has same-date coverage).
  *   - dateline seam continuity (lon -180 and +180 are the same meridian).
  *   - global raster is 2:1 equirectangular.
  *
@@ -39,9 +43,9 @@ const NIGHT_MIN_OPAQUE = 0.55;
 const PROBE_MIN_OPAQUE = 0.02;
 
 // Transfer-curve constants (must mirror src/scene/clouds.ts).
-const CLOUD_TRANSFER_AMBIGUOUS_CC = 0.3;
-const CLOUD_TRANSFER_CONFIDENT_CC = 0.85;
-const CLOUD_TRANSFER_MAX_ALPHA = 0.7;
+const CLOUD_TRANSFER_AMBIGUOUS_CC = 0.45;
+const CLOUD_TRANSFER_CONFIDENT_CC = 0.9;
+const CLOUD_TRANSFER_MAX_ALPHA = 0.35;
 
 const SOURCES = [
   {
@@ -297,27 +301,60 @@ for (const e of ramp) {
     : fail(`${cmapErrors} colormap mismatches`);
 }
 
-function decodeMask(img) {
+// Decode a colormapped PNG into the continuous clear-sky-confidence field
+// (NaN = no-data). Mirrors src/scene/clouds.ts extractClearConfidence.
+function extractClearConfidence(img) {
   const { width, height, data } = img;
-  const out = Buffer.alloc(width * height * 4);
-  const clear = new Float32Array(width * height); // pre-transfer field (seam checks)
+  const clear = new Float32Array(width * height);
   for (let i = 0, p = 0; i < data.length; i += 4, p++) {
-    const srcA = data[i + 3];
-    if (srcA === 0) continue; // no-data stays transparent
+    if (data[i + 3] === 0) { clear[p] = NaN; continue; } // no-data
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
-    const clearConfidence =
+    clear[p] =
       (exactValues.get((r << 16) | (g << 8) | b) ??
         lut[(r >> 2) * LUT_DIM * LUT_DIM + (g >> 2) * LUT_DIM + (b >> 2)]) / 255;
-    clear[p] = clearConfidence;
-    const cloudConfidence = 1 - clearConfidence;
-    out[i] = 255;
-    out[i + 1] = 255;
-    out[i + 2] = 255;
-    out[i + 3] = Math.round(cloudVisualTransfer(cloudConfidence) * 255);
   }
-  return { width, height, data: out, clear };
+  return { width, height, clear };
+}
+
+// Per-pixel source fallback: SNPP wins wherever it has valid data; NOAA-20
+// fills ONLY SNPP no-data pixels. Never a union of detections. Mirrors
+// src/scene/clouds.ts mergeClearConfidence.
+function mergeClearConfidence(primary, fallback) {
+  const { width, height, clear: p } = primary;
+  const f = fallback ? fallback.clear : null;
+  const merged = new Float32Array(width * height);
+  let valid = 0;
+  let filled = 0;
+  for (let i = 0; i < merged.length; i++) {
+    if (!Number.isNaN(p[i])) { merged[i] = p[i]; valid++; }
+    else if (f && !Number.isNaN(f[i])) { merged[i] = f[i]; filled++; valid++; }
+    else merged[i] = NaN;
+  }
+  return { width, height, clear: merged, valid, filled };
+}
+
+// Pre-transfer clear-confidence field -> white-cloud RGBA buffer (NaN = no
+// data stays fully transparent). Mirrors clouds.ts confidenceToCanvas.
+function confidenceToAlphaCanvas(field) {
+  const { width, height, clear } = field;
+  const out = Buffer.alloc(width * height * 4);
+  for (let p = 0, o = 0; p < clear.length; p++, o += 4) {
+    if (Number.isNaN(clear[p])) continue; // transparent
+    const a = cloudVisualTransfer(1 - clear[p]);
+    out[o] = 255;
+    out[o + 1] = 255;
+    out[o + 2] = 255;
+    out[o + 3] = Math.round(a * 255);
+  }
+  return { width, height, data: out };
+}
+
+function countNoData(field) {
+  let n = 0;
+  for (let i = 0; i < field.clear.length; i++) if (Number.isNaN(field.clear[i])) n++;
+  return n;
 }
 
 function dateStr(back) {
@@ -325,12 +362,13 @@ function dateStr(back) {
   return d.toISOString().slice(0, 10);
 }
 
-function seamStats(mask) {
+function seamStats(field) {
   // Seam spans col W-1 -> col 0 (lon ±180, the same meridian, ~1px apart in
   // the raster), measured on the smooth PRE-TRANSFER clear-confidence field
   // (the transferred alpha is clipped, which exaggerates edge gradients).
   // Continuity holds when the seam delta is on par with any adjacent pair.
-  const { width, height, clear } = mask;
+  // Rows with no-data pixels on either side of the seam are skipped.
+  const { width, height, clear } = field;
   let seam = 0;
   let adj = 0;
   let n = 0;
@@ -338,11 +376,32 @@ function seamStats(mask) {
     const a = clear[y * width];
     const b = clear[y * width + width - 1];
     const c = clear[y * width + 1];
+    if (Number.isNaN(a) || Number.isNaN(b) || Number.isNaN(c)) continue;
     seam += Math.abs(a - b);
     adj += Math.abs(a - c);
     n++;
   }
-  return { seam: seam / n, adj: adj / n };
+  return { seam: seam / n, adj: adj / n, rows: n };
+}
+
+// Longest contiguous run of near-empty raster columns (opaque fraction
+// < 0.02). A large run is the "vertical missing strip" artifact — orbital
+// swath gaps where a source had no overpass processed yet.
+function worstGapColumnRun(field) {
+  const { width, height, clear } = field;
+  let worst = 0;
+  let run = 0;
+  for (let x = 0; x < width; x++) {
+    let n = 0;
+    for (let y = 0; y < height; y++) if (!Number.isNaN(clear[y * width + x])) n++;
+    if (n / height < 0.02) {
+      run++;
+      if (run > worst) worst = run;
+    } else {
+      run = 0;
+    }
+  }
+  return worst;
 }
 
 // ---------------------------------------------------------------------------
@@ -418,11 +477,13 @@ for (const [label, img] of [['day', day], ['night', night]]) {
     : fail(`${black} opaque-black pixels in ${label} source`);
 }
 
-const dayMask = decodeMask(day);
-const nightMask = decodeMask(night);
+const dayField = extractClearConfidence(day);
+const nightField = extractClearConfidence(night);
 
-// Decoded no-data must be exactly transparent.
-for (const [label, srcImg, mask] of [['day', day, dayMask], ['night', night, nightMask]]) {
+// Primary-only decode: no-data must be exactly transparent (the fill will
+// legitimately add alpha over SNPP no-data — verified separately below).
+for (const [label, srcImg, field] of [['day', day, dayField], ['night', night, nightField]]) {
+  const mask = confidenceToAlphaCanvas(field);
   let leaked = 0;
   for (let i = 3; i < srcImg.data.length; i += 4) {
     if (srcImg.data[i] === 0 && mask.data[i] !== 0) leaked++;
@@ -432,12 +493,105 @@ for (const [label, srcImg, mask] of [['day', day, dayMask], ['night', night, nig
     : fail(`${leaked} no-data pixels leaked opacity (${label})`);
 }
 
-const seamDay = seamStats(dayMask);
-const seamNight = seamStats(nightMask);
-console.log(`  dateline seam |delta| (clear-confidence field): day ${seamDay.seam.toFixed(3)} (adjacent-col baseline ${seamDay.adj.toFixed(3)}), night ${seamNight.seam.toFixed(3)} (baseline ${seamNight.adj.toFixed(3)})`);
-seamDay.seam < seamDay.adj + 0.1 && seamNight.seam < seamNight.adj + 0.1
-  ? ok('dateline seam continuous (lon ±180 map to the same meridian)')
-  : fail('dateline seam discontinuity — UV mapping suspect');
+// ---------------------------------------------------------------------------
+// Per-pixel NOAA-20 gap fill (SNPP primary only; day and night independently)
+// ---------------------------------------------------------------------------
+
+let fillDay = null;
+let fillNight = null;
+if (best.src.id === 'SNPP') {
+  try {
+    const n20 = SOURCES.find((s) => s.id === 'NOAA-20');
+    const [fDay, fNight] = await Promise.all([
+      fetchPng(n20.day, best.date, W, H),
+      fetchPng(n20.night, best.date, W, H),
+    ]);
+    fillDay = extractClearConfidence(fDay);
+    fillNight = extractClearConfidence(fNight);
+  } catch (err) {
+    console.log(`  NOAA-20 same-date fill unavailable (${err.message}) — gaps stay transparent`);
+  }
+}
+
+const dayMerge = mergeClearConfidence(dayField, fillDay);
+const nightMerge = mergeClearConfidence(nightField, fillNight);
+const fillUsed = dayMerge.filled > 0 || nightMerge.filled > 0;
+const dayFillPct = dayMerge.valid ? ((100 * dayMerge.filled) / dayMerge.valid).toFixed(2) : '0.00';
+const nightFillPct = nightMerge.valid ? ((100 * nightMerge.filled) / nightMerge.valid).toFixed(2) : '0.00';
+console.log(`  gap fill: day +${dayMerge.filled} px from NOAA-20 (${dayFillPct}% of merged coverage), night +${nightMerge.filled} px (${nightFillPct}%)`);
+
+if (fillDay || fillNight) {
+  // SNPP-wins property: merged must equal SNPP wherever SNPP had data.
+  let viol = 0;
+  for (const [primary, merged] of [[dayField, dayMerge], [nightField, nightMerge]]) {
+    for (let i = 0; i < primary.clear.length; i++) {
+      if (!Number.isNaN(primary.clear[i]) && merged.clear[i] !== primary.clear[i]) viol++;
+    }
+  }
+  viol === 0
+    ? ok('per-pixel fallback: SNPP values preserved wherever SNPP has data (no union of detections)')
+    : fail(`${viol} SNPP-valid pixels were altered by the fill`);
+
+  const dNo = countNoData(dayField);
+  const dMerge = countNoData(dayMerge);
+  const nNo = countNoData(nightField);
+  const nMerge = countNoData(nightMerge);
+  console.log(`  no-data px: day ${dNo} -> ${dMerge}, night ${nNo} -> ${nMerge}`);
+  dMerge <= dNo && nMerge <= nNo
+    ? ok('fill only ADDS coverage (merged no-data <= primary no-data)')
+    : fail('merged mask lost primary data');
+
+  if (fillUsed) ok('NOAA-20 filled SNPP no-data gaps where valid same-date data exists');
+  else console.log('  note: NOAA-20 same-date raster fetched but contained no fill pixels');
+}
+
+// Gap-strip check: large contiguous vertical no-data strips must shrink when
+// NOAA-20 has coverage there (and can never grow — merge only adds data).
+{
+  const d0 = worstGapColumnRun(dayField);
+  const d1 = worstGapColumnRun(dayMerge);
+  const n0 = worstGapColumnRun(nightField);
+  const n1 = worstGapColumnRun(nightMerge);
+  console.log(`  worst contiguous near-empty column run: day ${d0} -> ${d1} cols, night ${n0} -> ${n1} cols`);
+  if (d1 > d0 || n1 > n0) {
+    fail('gap fill made a column strip WORSE — regression');
+  } else if (d0 > 4 || n0 > 4) {
+    if (fillUsed && (d1 < d0 || n1 < n0)) {
+      ok(`vertical gap strip shrunk under NOAA-20 fill (day ${d0}->${d1}, night ${n0}->${n1} cols)`);
+    } else if (fillUsed) {
+      console.log('  note: strip sits where NOAA-20 also has no same-date coverage — honest gap remains');
+    } else {
+      console.log('  note: NOAA-20 fill unavailable — strip remains (transparent, never black)');
+    }
+  } else {
+    ok('no large vertical gap strip in the merged raster');
+  }
+}
+
+const dayMask = confidenceToAlphaCanvas(dayMerge);
+const nightMask = confidenceToAlphaCanvas(nightMerge);
+
+// Pixels missing from BOTH sources must be exactly transparent.
+for (const [label, field, mask] of [['day', dayMerge, dayMask], ['night', nightMerge, nightMask]]) {
+  let leaked = 0;
+  for (let p = 0, o = 3; p < field.clear.length; p++, o += 4) {
+    if (Number.isNaN(field.clear[p]) && mask.data[o] !== 0) leaked++;
+  }
+  leaked === 0
+    ? ok(`pixels missing from both sources stay fully transparent (${label})`)
+    : fail(`${leaked} both-source no-data pixels leaked opacity (${label})`);
+}
+
+const seamDay = seamStats(dayMerge);
+const seamNight = seamStats(nightMerge);
+console.log(`  dateline seam |delta| (clear-confidence field): day ${seamDay.seam.toFixed(3)} (adjacent-col baseline ${seamDay.adj.toFixed(3)}, ${seamDay.rows} rows), night ${seamNight.seam.toFixed(3)} (baseline ${seamNight.adj.toFixed(3)}, ${seamNight.rows} rows)`);
+if (seamDay.rows === 0 || seamNight.rows === 0) {
+  fail('no comparable rows for the dateline seam check');
+} else if (seamDay.seam < seamDay.adj + 0.1 && seamNight.seam < seamNight.adj + 0.1) {
+  ok('dateline seam continuous (lon ±180 map to the same meridian)');
+} else {
+  fail('dateline seam discontinuity — UV mapping suspect');
+}
 
 // Sanity: with the corrected semantics, confidently-cloudy areas (low clear
 // confidence, cream end of the ramp) must produce nonzero alpha somewhere,

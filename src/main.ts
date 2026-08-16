@@ -86,7 +86,7 @@ const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.dampingFactor = 0.06;
 controls.minDistance = 1.2;
-controls.maxDistance = 24;
+controls.maxDistance = 4.2; // ≈ initial view — Earth never shrinks to a marble
 controls.enablePan = false;
 controls.rotateSpeed = 0.65;
 controls.zoomSpeed = 0.85;
@@ -809,11 +809,12 @@ async function init(): Promise<void> {
     setFeed('clouds', 'Clouds', 'off', 'loading…');
     earthSystem.cloudsReady.then((layer) => {
       if (layer) {
+        const srcLabel = layer.fill.used ? `${layer.source}+NOAA-20` : layer.source;
         setFeed(
           'clouds',
           'Clouds',
           'live',
-          `NASA GIBS · ${layer.source} · ${layer.date} · DAY+NIGHT`,
+          `NASA GIBS · ${srcLabel} · ${layer.date} · DAY+NIGHT`,
         );
       } else {
         setFeed('clouds', 'Clouds', 'off', 'GIBS cloud mask unreachable — stylized Earth only');

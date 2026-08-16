@@ -18,7 +18,7 @@ Status legend:
 | Cyclones | NOAA NHC | LIVE (SNAPSHOT) | 20 min | dev proxy → `live-data/nhc.json` → curated list | `src/geo/cyclones.ts` |
 | Space weather (Kp) | NOAA SWPC | LIVE | 15 min | direct (CORS-open) | `src/space/spaceWeather.ts` |
 | Launches | Launch Library 2 | LIVE | 30 min | direct (CORS-open) → curated pads | `src/space/launches.ts` |
-| Cloud cover | NASA GIBS (VIIRS cloud mask) | LIVE | daily imagery | WMS 1.1.1 global equirectangular PNG (2048×1024, TRANSPARENT) for Clear Sky Confidence Day + Night; SNPP → NOAA-20 fallback; date probe via tiny GetMap (empty = unpublished), newest sufficiently-complete date (opaque-fraction gate), 4-day backtrack; decoded via documented GIBS colormap (clear-sky confidence → cloud confidence → capped visualization transfer) | `src/scene/clouds.ts` |
+| Cloud cover | NASA GIBS (VIIRS cloud mask) | LIVE | daily imagery | WMS 1.1.1 global equirectangular PNG (2048×1024, TRANSPARENT) for Clear Sky Confidence Day + Night; SNPP primary — same-date NOAA-20 fills SNPP no-data gaps per pixel (day/night independently) and remains a whole-source fallback; date probe via tiny GetMap (empty = unpublished), newest sufficiently-complete date (opaque-fraction gate), 4-day backtrack; decoded via documented GIBS colormap (clear-sky confidence → cloud confidence → capped visualization transfer) | `src/scene/clouds.ts` |
 | Submarine cables | TeleGeography map | STATIC snapshot | weekly (CI) | same-origin `data/cables.json` → curated fallback | `src/infra/cables.ts` |
 | Marine traffic | curated fleet | STATIC + SIM movement | — | — | `src/marine/engine.ts` |
 | Volcanoes | curated | STATIC | — | — | `src/geo/volcanoes.ts` |
