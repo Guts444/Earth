@@ -77,7 +77,8 @@ geoContext.update(camera, scene.rotation.y); // per-frame, dirty-checked
   (countries win globally; capitals beat admin-1 regionally; local cities
   win locally) — a giant country label can never block local city names.
 - **Occlusion**: EXACT visibility math, three layers: (1) horizon test —
-  a surface anchor is visible only if `dotN > 1/d` (the tangent-cone limb;
+  a surface anchor P is visible only if `P · camera > 1` (the exact
+  unit-sphere condition: equality holds precisely on the tangent circle, and
   points beyond it are occluded by the globe even though they project inside
   the silhouette); (2) the screen silhouette is the projected tangent circle
   (exact, sampled in 3D — correct at every distance, incl. the old
@@ -93,7 +94,10 @@ geoContext.update(camera, scene.rotation.y); // per-frame, dirty-checked
   landing stations, launch pads, nuclear plants, DSN sites, the selected
   target's reticle) reserve screen rectangles computed in `main.ts`
   (`computeTacticalObstacles`, scaled by the marker's real on-screen size;
-  markers < 10 px reserve nothing). The label layer consumes generic rects —
+  markers < 10 px reserve nothing; the lazy cache key includes the camera,
+  the reticle's current rect, and a data revision so selection/reticle/live
+  data changes re-reserve even while the camera is stationary). The label
+  layer consumes generic rects —
   no tactical-domain knowledge. Severity by size: ≤ 18 px markers block only
   text under their center; > 18 px must cover ≥ 30 % of the label's TEXT
   rect (obstacles test the text rect, not the city dot — a station at a

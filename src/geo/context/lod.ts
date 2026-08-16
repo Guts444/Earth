@@ -44,8 +44,12 @@ export const COUNTRY_RANK_TIERS = [
 export const ADMIN1_RANK_MIN_DIST = [2.8, 2.55, 2.3, 2.1] as const; // rank ≤2, ≤5, ≤7, all
 export const ADMIN1_MAX_RANK = [2, 5, 7, 99] as const;
 
-/** City tier gates (tier 0 = capitals/world cities … tier 4 = small towns). */
-export const CITY_TIER_MIN_DIST = [2.85, 2.8, 2.15, 1.8, 1.45] as const;
+/**
+ * City tier gates (tier 0 = capitals/world cities … tier 4 = small towns).
+ * Tier 0 opens exactly at the REGIONAL boundary (d < 2.8) so cities never
+ * appear while the COUNTRY band is still active.
+ */
+export const CITY_TIER_MIN_DIST = [2.8, 2.8, 2.15, 1.8, 1.45] as const;
 
 /**
  * Admin-1 SHORT-label band (country scale): candidates exist only while the

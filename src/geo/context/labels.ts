@@ -5,8 +5,9 @@
  *   - One <canvas> with pointer-events:none sits between the WebGL canvas and
  *     the HUD panels: no DOM churn (no thousands of divs), no framework, no
  *     interference with the existing HUD, full control of collision logic.
- *   - Text is re-drawn only when the camera moves materially (dirty-check on
- *     position/orientation/distance) — idle frames cost nothing.
+ *   - Text is re-drawn only when the camera moves materially or the obstacle
+ *     set changes (dirty-check on position/orientation/distance plus the
+ *     obstacle array reference) — idle frames cost nothing.
  *   - Hemisphere occlusion: a label anchor on the sphere is visible iff
  *     dot(anchorNormal, viewDir) > 0, so far-side labels never leak through
  *     the globe; labels fade out near the limb for a clean disappearance.
@@ -110,6 +111,12 @@ export class LabelLayer {
   private lastSceneRotY = NaN;
   private lastVisible = false;
   private needRedraw = true;
+
+  // Obstacle array from the last layout pass. The caller reuses the same
+  // array while the obstacle set is unchanged, so a fresh reference here
+  // means selection/reticle/data changed and a relayout is required even
+  // when the camera is perfectly still.
+  private lastObstacles: ReadonlyArray<ScreenRect> | null = null;
 
   // Width cache: name → measured text width (per kind font)
   private widthCache = new Map<string, number>();
@@ -224,6 +231,10 @@ export class LabelLayer {
       Math.abs(camDist - this.lastCamDist) > 0.012 ||
       Math.abs(sceneRotY - this.lastSceneRotY) > 1e-5;
 
+    if (obstacles !== this.lastObstacles) {
+      this.lastObstacles = obstacles;
+      this.needRedraw = true;
+    }
     if (!moved && !this.needRedraw) return;
     this.lastX = camera.position.x;
     this.lastY = camera.position.y;
@@ -254,14 +265,17 @@ export class LabelLayer {
     for (const e of this.entries) {
       if (!labelTierActive(e, camDist)) continue;
       TMP.world.set(e.ax, e.ay, e.az).applyMatrix4(TMP.rotY);
+      // EXACT horizon for the unit sphere: a surface point P is visible iff
+      // P · camera > 1 — equality holds precisely on the tangent circle, and
+      // beyond the limb the product is < 1 even though the point still
+      // projects inside the silhouette. The old test compared the
+      // normal·viewDir cosine (which is 0 at the tangent) against 1/d, which
+      // hid labels well inside the visible disc; those must stay candidates.
+      if (TMP.world.dot(camera.position) <= 1) continue;
       TMP.view.copy(camera.position).sub(TMP.world);
+      // The same visibility in cosine form — exactly 0 at the tangent circle
+      // and strictly positive on the visible side; kept for the limb fade.
       const dotN = TMP.world.dot(TMP.view) / (TMP.world.length() * TMP.view.length());
-      // EXACT horizon: a surface point is visible only within the tangent
-      // cone — dotN > 1/d (the tangent point satisfies dotN = 1/d exactly).
-      // Points beyond the limb are occluded by the globe even though they
-      // still project inside the silhouette; they must never be candidates.
-      const horizon = 1 / camDist;
-      if (dotN <= horizon) continue;
 
       const ndc = TMP.world.project(camera);
       if (ndc.z > 1 || ndc.z < -1) continue;
@@ -279,9 +293,9 @@ export class LabelLayer {
 
       const w = this.textWidth(e);
       const h = RECT_H[e.kind];
-      // fade out as the anchor approaches the exact horizon
+      // fade out as the anchor approaches the exact horizon (dotN = 0 there)
       const alpha =
-        labelKindAlpha(e.kind, camDist) * smoothstep(horizon, horizon + 0.06, dotN);
+        labelKindAlpha(e.kind, camDist) * smoothstep(0, 0.06, dotN);
       // Invisible labels must not consume placement slots or collision rects
       // (a faded-out country name must never block local city labels).
       if (alpha <= 0.02) continue;

@@ -176,18 +176,45 @@ scene.add(geoContext.group);
 // nuclear plants, DSN sites, and the selected-target reticle) reserve their
 // screen rectangles so cartographic text never sits inside/under them.
 // Only large markers — every satellite/flight dot is NOT an obstacle.
-// Rebuilt lazily on camera/rotation change (matches the label dirty check).
+// Rebuilt lazily; the cache key covers camera/rotation, the reticle's current
+// rect, and a data revision, so selection/reticle/data changes re-reserve
+// even while the camera is stationary.
 // ---------------------------------------------------------------------------
 
 const obstacleTmp = new THREE.Vector3();
 const obstacleRotM = new THREE.Matrix4();
+const NO_OBSTACLES: ScreenRect[] = [];
 let obstacleCacheKey = '';
 let obstacleCache: ScreenRect[] = [];
+let obstacleDataRevision = 0;
 let obstaclesDisabled = false; // DEV-only A/B toggle
 
+/**
+ * Obstacle source data changed (async cable/launch data arriving) — bump the
+ * revision so the cache key can never reuse rects built from the old data
+ * while the camera is stationary.
+ */
+function invalidateTacticalObstacles(): void {
+  obstacleDataRevision++;
+}
+
 function computeTacticalObstacles(camera: THREE.PerspectiveCamera, rotY: number): ScreenRect[] {
-  if (obstaclesDisabled) return [];
-  const key = `${camera.position.x.toFixed(3)}|${camera.position.y.toFixed(3)}|${camera.position.z.toFixed(3)}|${rotY.toFixed(4)}`;
+  if (obstaclesDisabled) return NO_OBSTACLES;
+  // The reticle is a DOM overlay that can move every frame (target tracking)
+  // or appear/disappear on selection while the camera is perfectly still, so
+  // its current rect is part of the key. `obstacleDataRevision` catches
+  // async data changes to the marker sources.
+  let reticleKey = 'none';
+  if (currentSelectedTarget) {
+    const r = reticleEl.getBoundingClientRect();
+    reticleKey =
+      r.width > 0 && r.height > 0
+        ? `${Math.round(r.left)}|${Math.round(r.top)}|${Math.round(r.right)}|${Math.round(r.bottom)}`
+        : 'none';
+  }
+  const key =
+    `${camera.position.x.toFixed(3)}|${camera.position.y.toFixed(3)}|${camera.position.z.toFixed(3)}|` +
+    `${rotY.toFixed(4)}|v${obstacleDataRevision}|r${reticleKey}`;
   if (key === obstacleCacheKey) return obstacleCache;
   obstacleCacheKey = key;
   const rects: ScreenRect[] = [];
@@ -748,6 +775,7 @@ async function pollLaunches(): Promise<void> {
   try {
     const launches = await fetchUpcomingLaunches();
     applyUpcomingLaunches(launches);
+    invalidateTacticalObstacles();
     setFeed('launches', 'Launches', 'live', `Launch Library 2 · ${launches.length} upcoming · 30 min`);
     const next = launches.find((l) => l.netMs > Date.now());
     if (next && next.netMs - lastLaunchEventMs > 5 * 60 * 1000) {
@@ -945,6 +973,7 @@ async function init(): Promise<void> {
   loadCableData()
     .then((ds) => {
       cablesScene.setData(ds.cables, ds.stations);
+      invalidateTacticalObstacles();
       setFeed(
         'cables',
         'Cables',
