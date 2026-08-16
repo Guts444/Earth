@@ -10,25 +10,39 @@
  *   - Hemisphere occlusion: a label anchor on the sphere is visible iff
  *     dot(anchorNormal, viewDir) > 0, so far-side labels never leak through
  *     the globe; labels fade out near the limb for a clean disappearance.
- *   - Decluttering: priority-ordered greedy placement into a screen-space
- *     grid hash; countries beat admin-1 beat cities; density caps per kind.
+ *   - Horizon clipping: the EXACT projected silhouette of the sphere (sampled
+ *     tangent circle, correct for a perspective camera at any distance) both
+ *     clips the canvas and bounds candidate containment — labels near the
+ *     limb stay visible until genuinely occluded.
+ *   - Decluttering: priority-ordered greedy placement (per semantic band —
+ *     see lod.labelPriGroup) with exact AABB collision; city labels retry
+ *     right/left/below/above the dot; reserved TACTICAL obstacle rects
+ *     (cable stations, pads, plants, reticle) are consumed as generic screen
+ *     rectangles — this module knows nothing about tactical domains.
  */
 import * as THREE from 'three';
 import { geoToScene } from '../projection';
 import type { GeoContextData } from './data';
 import {
+  ADMIN1_MAX_RANK,
   ADMIN1_RANK_MIN_DIST,
   CITY_TIER_MIN_DIST,
   COUNTRY_RANK_TIERS,
+  SHORT_ACTIVE_MAX,
+  SHORT_ACTIVE_MIN,
   admin1LabelAlpha,
   admin1LabelCap,
+  admin1ShortAlpha,
+  admin1ShortCap,
   cityLabelAlpha,
   cityLabelCap,
   countryLabelAlpha,
   countryLabelCap,
+  labelPriGroup,
 } from './lod';
 
-export type LabelKind = 0 | 1 | 2; // country, admin-1, city
+export type LabelKind = 0 | 1 | 2 | 3; // country, admin-1 full, city, admin-1 short
+export type ScreenRect = readonly [number, number, number, number]; // css px x0,y0,x1,y1
 
 interface LabelEntry {
   kind: LabelKind;
@@ -37,7 +51,7 @@ interface LabelEntry {
   ax: number;
   ay: number;
   az: number;
-  /** Placement order within its kind (higher first). */
+  /** Placement order within its group (higher first). */
   order: number;
   /** LOD tier (city tier / country rank / admin-1 rank). */
   tier: number;
@@ -49,25 +63,35 @@ const FONT = [
   '600 12px "Segoe UI", "Helvetica Neue", sans-serif',
   '500 10px "Segoe UI", "Helvetica Neue", sans-serif',
   '400 9px "Segoe UI", "Helvetica Neue", sans-serif',
+  '600 10px "Segoe UI", "Helvetica Neue", sans-serif', // admin-1 short codes
 ] as const;
 
 const COLOR = [
   '#cfdfee', // country: pale steel — same family as borders
   '#9db6cc', // admin-1: dimmer, smaller
   '#e8e2d4', // city: warm parchment — visually distinct from country names
+  '#b9cbdd', // admin-1 short code: brighter than full names, smaller than countries
 ] as const;
 
 const HALO = 'rgba(0, 0, 0, 0.85)';
 const PAD = 2; // padding around label rects, css px
 const CITY_DOT_R = 1.8;
 /** Rect height per kind — honest glyph metrics, not inflated boxes. */
-const RECT_H = [13, 11, 10];
+const RECT_H = [13, 11, 10, 11];
+/** Acceptable distance beyond the silhouette edge for a label anchor. */
+const DISC_MARGIN_PX = 10;
+/** Silhouette polygon resolution (exact tangent circle sampled). */
+const DISC_SAMPLES = 72;
 
 const TMP = {
   world: new THREE.Vector3(),
   view: new THREE.Vector3(),
   rotY: new THREE.Matrix4(),
-  q: new THREE.Quaternion(),
+  axis: new THREE.Vector3(),
+  u: new THREE.Vector3(),
+  v: new THREE.Vector3(),
+  center: new THREE.Vector3(),
+  point: new THREE.Vector3(),
 };
 
 export class LabelLayer {
@@ -93,8 +117,11 @@ export class LabelLayer {
   // Placed labels for the current frame (kept for debugging/tests)
   private placedCount = 0;
   private lastPlacedNames: string[] = [];
-  private dbg = { entries: [0, 0, 0], candidates: [0, 0, 0], placed: [0, 0, 0] };
   private lastCandidateNames: string[] = [];
+  private dbg = { entries: [0, 0, 0, 0], candidates: [0, 0, 0, 0], placed: [0, 0, 0, 0] };
+  private lastDisc = { cx: 0, cy: 0, rMax: 0 };
+  private rejectedSample: string[] = [];
+  private lastPlacedRects: Array<{ n: string; r: [number, number, number, number] }> = [];
 
   constructor(container: HTMLElement) {
     this.canvas = document.createElement('canvas');
@@ -128,14 +155,12 @@ export class LabelLayer {
     for (const a of data.admin1) {
       const [ax, ay, az] = geoToScene(a.y, a.x);
       if (!Number.isFinite(ax)) continue;
-      entries.push({
-        kind: 1,
-        name: a.n,
-        ax, ay, az,
-        order: (10 - a.r) * 1e8,
-        tier: a.r,
-        cap: 0,
-      });
+      const order = (10 - a.r) * 1e8;
+      if (a.s) {
+        // country-scale abbreviated phase (CA/TX/FL, BY, UP…)
+        entries.push({ kind: 3, name: a.s, ax, ay, az, order, tier: a.r, cap: 0 });
+      }
+      entries.push({ kind: 1, name: a.n, ax, ay, az, order, tier: a.r, cap: 0 });
     }
 
     for (const c of data.cities) {
@@ -152,7 +177,7 @@ export class LabelLayer {
     }
 
     this.entries = entries;
-    this.dbg.entries = [0, 1, 2].map((k) => entries.filter((e) => e.kind === k).length);
+    this.dbg.entries = [0, 1, 2, 3].map((k) => entries.filter((e) => e.kind === k).length);
     this.needRedraw = true;
   }
 
@@ -170,8 +195,15 @@ export class LabelLayer {
    * Per-frame update. Recomputes layout + redraws only when the camera moved
    * materially; otherwise the previous canvas content stays (zero cost).
    * `sceneRotY` is the current frame's scene.rotation.y (auto-rotate drift).
+   * `obstacles` are reserved screen rectangles (tactical markers, reticle)
+   * provided by the caller as generic rects — never domain objects.
    */
-  update(camera: THREE.PerspectiveCamera, sceneRotY: number, visible: boolean): void {
+  update(
+    camera: THREE.PerspectiveCamera,
+    sceneRotY: number,
+    visible: boolean,
+    obstacles: ReadonlyArray<ScreenRect> = [],
+  ): void {
     if (!visible) {
       if (this.lastVisible) {
         this.lastVisible = false;
@@ -203,11 +235,12 @@ export class LabelLayer {
     camera.updateMatrixWorld();
     TMP.rotY.makeRotationY(sceneRotY);
 
-    // Globe disc on screen (for horizon clipping of labels): the earth's
-    // silhouette projected from this camera. Labels never bleed past it.
-    const disc = this.globeDisc(camera);
+    // Exact projected silhouette of the sphere for this camera (tangent
+    // circle sampled in 3D, projected per point — correct for any distance).
+    const disc = this.globeSilhouette(camera);
+    this.lastDisc = { cx: disc.cx, cy: disc.cy, rMax: disc.rMax };
 
-    // ---- 1. Collect candidates (tier gate + hemisphere + limb fade) -------
+    // ---- 1. Collect candidates (tier gate + hemisphere + disc + limb) -----
     const candidates: Array<{
       entry: LabelEntry;
       sx: number;
@@ -216,61 +249,165 @@ export class LabelLayer {
       w: number;
       h: number;
     }> = [];
-    this.dbg.candidates = [0, 0, 0];
+    this.dbg.candidates = [0, 0, 0, 0];
 
     for (const e of this.entries) {
       if (!labelTierActive(e, camDist)) continue;
       TMP.world.set(e.ax, e.ay, e.az).applyMatrix4(TMP.rotY);
       TMP.view.copy(camera.position).sub(TMP.world);
       const dotN = TMP.world.dot(TMP.view) / (TMP.world.length() * TMP.view.length());
-      if (dotN <= 0.06) continue; // far side or crowded right at the limb
+      // EXACT horizon: a surface point is visible only within the tangent
+      // cone — dotN > 1/d (the tangent point satisfies dotN = 1/d exactly).
+      // Points beyond the limb are occluded by the globe even though they
+      // still project inside the silhouette; they must never be candidates.
+      const horizon = 1 / camDist;
+      if (dotN <= horizon) continue;
 
       const ndc = TMP.world.project(camera);
       if (ndc.z > 1 || ndc.z < -1) continue;
       const sx = (ndc.x * 0.5 + 0.5) * this.cssW;
       const sy = (0.5 - ndc.y * 0.5) * this.cssH;
 
-      // The label must sit on the VISIBLE disc, not merely in the forward
-      // hemisphere (a point 45° past the limb still has dotN > 0 — its text
-      // would be clipped away, wasting a collision slot).
-      if (Math.hypot(sx - disc.cx, sy - disc.cy) > disc.r + 8) continue;
+      // Must sit on the visible disc: O(1) bounding-circle check against the
+      // silhouette polygon (slightly over-inclusive when the camera doesn't
+      // look at the origin — the exact polygon clip still prevents any visual
+      // bleed; this test only saves collision slots).
+      const ddx = sx - disc.cx;
+      const ddy = sy - disc.cy;
+      const margin = DISC_MARGIN_PX;
+      if (ddx * ddx + ddy * ddy > (disc.rMax + margin) * (disc.rMax + margin)) continue;
 
       const w = this.textWidth(e);
       const h = RECT_H[e.kind];
+      // fade out as the anchor approaches the exact horizon
+      const alpha =
+        labelKindAlpha(e.kind, camDist) * smoothstep(horizon, horizon + 0.06, dotN);
+      // Invisible labels must not consume placement slots or collision rects
+      // (a faded-out country name must never block local city labels).
+      if (alpha <= 0.02) continue;
       candidates.push({
         entry: e,
         sx,
         sy,
-        alpha: labelKindAlpha(e.kind, camDist) * smoothstep(0, 0.12, dotN),
+        alpha,
         w: e.kind === 2 ? w + CITY_DOT_R * 2 + 5 : w,
         h,
       });
       this.dbg.candidates[e.kind]++;
     }
 
-    // ---- 2. Priority order ------------------------------------------------
-    // countries → NATIONAL CAPITALS → admin-1 → other cities, then
-    // best-in-kind first. Capitals outrank provinces so Tokyo isn't blocked
-    // by the Gunma prefecture label; ordinary cities stay below admin-1 so a
-    // secondary city (Tampa) never drops its state name (Florida).
-    const priKind = (c: (typeof candidates)[number]): number => {
-      if (c.entry.kind === 0) return 0;
-      if (c.entry.kind === 2 && c.entry.cap === 1) return 1;
-      if (c.entry.kind === 1) return 2;
-      return 3;
-    };
-    candidates.sort((a, b) => priKind(a) - priKind(b) || b.entry.order - a.entry.order);
+    // ---- 2. Per-band semantic priority -------------------------------------
+    this.rejectedSample = [];
+    this.lastPlacedRects = [];
+    candidates.sort(
+      (a, b) =>
+        labelPriGroup(a.entry.kind, { tier: a.entry.tier, cap: a.entry.cap }, camDist) -
+          labelPriGroup(b.entry.kind, { tier: b.entry.tier, cap: b.entry.cap }, camDist) ||
+        b.entry.order - a.entry.order,
+    );
 
-    // ---- 3. Greedy collision placement (exact rect overlap) ----------------
-    // Exact AABB overlap beats a grid hash here: candidate counts are small
-    // (≤ ~600) and cell quantization inflates rects, falsely culling labels
-    // that fit with a few px to spare (e.g. London vs Paris at country zoom).
-    // City labels try alternative offsets (right → left → below the dot)
-    // before giving up, so a capital under its own country/province label
-    // (Tokyo vs Japan, Melbourne vs Victoria) still gets placed.
-    const caps = [countryLabelCap(camDist), admin1LabelCap(camDist), cityLabelCap(camDist)];
-    const placedByKind = [0, 0, 0];
-    const rects: Array<[number, number, number, number]> = [];
+    // ---- 3. Greedy collision placement (grid-indexed exact rect overlap) ---
+    // Candidate counts reach ~3.5k at local zoom (7.3k city set), so rects
+    // are indexed in a screen-space grid: each candidate tests only the few
+    // rects sharing its cells instead of all ~2.2k. Exact AABB overlap beats
+    // cell quantization for the FINAL decision. City labels try alternative
+    // offsets (right → left → below → above the dot) before giving up, so a
+    // capital under its own country/province label still gets placed. Both
+    // label rects and reserved tactical obstacle rects are honored.
+    const caps = [
+      countryLabelCap(camDist),
+      admin1LabelCap(camDist),
+      cityLabelCap(camDist),
+      admin1ShortCap(camDist),
+    ];
+    const placedByKind = [0, 0, 0, 0];
+    const GRID_CELL = 24;
+    // Obstacle severity by rendered size: tiny markers (≤18px) block only the
+    // pixels under their center; mid markers (≤32px) must materially cover a
+    // label (≥30% of its rect); large boxes (reticle, big pads) reject on any
+    // overlap — text must never sit inside them.
+    const POINT_OBSTACLE_MAX = 18;
+    const MID_OBSTACLE_MAX = 32;
+    const OBSTACLE_MIN_COVER = 0.3;
+    /** Label-label corner clips below this area don't reject placement. */
+    const TINY_OVERLAP_PX2 = 48;
+    interface GridEntry {
+      r: [number, number, number, number];
+      kind: 0 | 1 | 2 | 3; // 0 = placed label, 1 = point, 2 = mid, 3 = large
+      owner: string;
+    }
+    const grid = new Map<number, GridEntry[]>();
+    const insertRect = (
+      r: [number, number, number, number],
+      kind: 0 | 1 | 2 | 3,
+      owner = '',
+    ): void => {
+      const x0 = Math.floor(r[0] / GRID_CELL);
+      const x1 = Math.floor(r[2] / GRID_CELL);
+      const y0 = Math.floor(r[1] / GRID_CELL);
+      const y1 = Math.floor(r[3] / GRID_CELL);
+      for (let gx = x0; gx <= x1; gx++) {
+        for (let gy = y0; gy <= y1; gy++) {
+          const key = gx + gy * 4096;
+          let list = grid.get(key);
+          if (!list) grid.set(key, (list = []));
+          list.push({ r, kind, owner });
+        }
+      }
+    };
+    const rectOverlaps = (
+      a: [number, number, number, number],
+      aText: [number, number, number, number],
+    ): GridEntry | null => {
+      const x0 = Math.floor(a[0] / GRID_CELL);
+      const x1 = Math.floor(a[2] / GRID_CELL);
+      const y0 = Math.floor(a[1] / GRID_CELL);
+      const y1 = Math.floor(a[3] / GRID_CELL);
+      const aW = aText[2] - aText[0];
+      const aH = aText[3] - aText[1];
+      const aArea = aW * aH;
+      for (let gx = x0; gx <= x1; gx++) {
+        for (let gy = y0; gy <= y1; gy++) {
+          const list = grid.get(gx + gy * 4096);
+          if (!list) continue;
+          for (const e of list) {
+            const r = e.r;
+            if (e.kind === 0) {
+              // placed labels: material overlap rejects (tiny corner clips,
+              // ≤48px², are tolerated — glyphs don't fill padded corners)
+              if (a[0] < r[2] && a[2] > r[0] && a[1] < r[3] && a[3] > r[1]) {
+                const ix = Math.min(a[2], r[2]) - Math.max(a[0], r[0]);
+                const iy = Math.min(a[3], r[3]) - Math.max(a[1], r[1]);
+                if (ix * iy > TINY_OVERLAP_PX2) return e;
+              }
+            } else if (e.kind === 1) {
+              // a small marker dot only blocks text it actually sits on
+              const cx = (r[0] + r[2]) / 2;
+              const cy = (r[1] + r[3]) / 2;
+              if (cx > aText[0] && cx < aText[2] && cy > aText[1] && cy < aText[3]) return e;
+            } else {
+              // any box marker (mid or large): reject only when it materially
+              // covers the text. A big station at the city's own dot overlaps
+              // just the offset text's near edge (~25%) → the city label still
+              // places; text drawn through the middle of a large marker or the
+              // reticle covers ≥30% → rejected.
+              const ix = Math.max(0, Math.min(aText[2], r[2]) - Math.max(aText[0], r[0]));
+              const iy = Math.max(0, Math.min(aText[3], r[3]) - Math.max(aText[1], r[1]));
+              if (ix * iy > aArea * OBSTACLE_MIN_COVER) return e;
+            }
+          }
+        }
+      }
+      return null;
+    };
+    for (const r of obstacles) {
+      const w = r[2] - r[0];
+      const h = r[3] - r[1];
+      const kind = w <= POINT_OBSTACLE_MAX && h <= POINT_OBSTACLE_MAX ? 1
+        : w <= MID_OBSTACLE_MAX && h <= MID_OBSTACLE_MAX ? 2
+        : 3;
+      insertRect([r[0] - 2, r[1] - 2, r[2] + 2, r[3] + 2], kind);
+    }
     const placed: typeof candidates = [];
 
     for (const c of candidates) {
@@ -278,8 +415,17 @@ export class LabelLayer {
       if (placedByKind[k] >= caps[k]) continue;
 
       const textW = k === 2 ? c.w - CITY_DOT_R * 2 - 5 : c.w;
-      const attempts: Array<{ ox: number; oy: number; off: number; rect: [number, number, number, number] }> = [];
-      const offs = k === 2 ? [0, 1, 2, 3] : [4];
+      const attempts: Array<{
+        ox: number;
+        oy: number;
+        off: number;
+        rect: [number, number, number, number];
+        textRect: [number, number, number, number];
+      }> = [];
+      // cities: 4 offsets around the dot; admin-1: centered then ±14px vertical
+      // (a state name sits above/below its capital's label instead of losing);
+      // countries and short codes: centered only.
+      const offs = k === 2 ? [0, 1, 2, 3] : k === 1 ? [4, 5, 6] : [4];
       for (const off of offs) {
         let ox = c.sx;
         let oy = c.sy;
@@ -303,36 +449,45 @@ export class LabelLayer {
           oy = c.sy - 9;
           left = ox - PAD;
           right = ox + textW + PAD;
-        } else { // centered (countries / admin-1)
+        } else { // centered: 4 = on anchor, 5 = +14px, 6 = −14px
+          if (off === 5) oy += 14;
+          if (off === 6) oy -= 14;
           left = c.sx - textW / 2 - PAD;
           right = c.sx + textW / 2 + PAD;
         }
         const top = oy - c.h / 2 - PAD;
         const bottom = oy + c.h / 2 + PAD;
+        // text-only rect: obstacle checks use this (the city dot may legally
+        // sit on a tactical marker — the marker IS at the city's location);
+        // label-label collision uses the full rect below.
+        const textRect: [number, number, number, number] = [left, top, right, bottom];
         // include the city dot in the rect so it never sits under other text
         if (k === 2) {
           left = Math.min(left, c.sx - CITY_DOT_R - PAD);
           right = Math.max(right, c.sx + CITY_DOT_R + PAD);
         }
-        attempts.push({ ox, oy, off, rect: [left, top, right, bottom] });
+        attempts.push({ ox, oy, off, rect: [left, top, right, bottom], textRect });
       }
 
       let chosen: (typeof attempts)[number] | null = null;
+      let blocker: GridEntry | null = null;
       for (const a of attempts) {
-        let free = true;
-        for (const [rl, rt, rr, rb] of rects) {
-          if (a.rect[0] < rr && a.rect[2] > rl && a.rect[1] < rb && a.rect[3] > rt) {
-            free = false;
-            break;
-          }
-        }
-        if (free) { chosen = a; break; }
+        const b = rectOverlaps(a.rect, a.textRect);
+        if (!b) { chosen = a; break; }
+        blocker = blocker ?? b;
       }
-      if (!chosen) continue;
+      if (!chosen) {
+        if (this.rejectedSample.length < 40) {
+          const bname = blocker && blocker.kind === 0 ? `'${blocker.owner}'` : `kind ${blocker?.kind ?? '?'}`;
+          this.rejectedSample.push(`${c.entry.name} [blocked by ${bname}]`);
+        }
+        continue;
+      }
 
-      rects.push(chosen.rect);
+      insertRect(chosen.rect, 0, c.entry.name); // placed labels reject any overlap
       placedByKind[k]++;
       placed.push(c);
+      this.lastPlacedRects.push({ n: c.entry.name, r: chosen.rect });
       (c as unknown as { ox: number; oy: number; off: number }).ox = chosen.ox;
       (c as unknown as { ox: number; oy: number; off: number }).oy = chosen.oy;
       (c as unknown as { ox: number; oy: number; off: number }).off = chosen.off;
@@ -340,7 +495,7 @@ export class LabelLayer {
     this.placedCount = placed.length;
     this.lastPlacedNames = placed.map((p) => p.entry.name);
     this.lastCandidateNames = candidates.map((p) => p.entry.name);
-    this.dbg.placed = [0, 1, 2].map((k) => placed.filter((p) => p.entry.kind === k).length);
+    this.dbg.placed = [0, 1, 2, 3].map((k) => placed.filter((p) => p.entry.kind === k).length);
 
     // ---- 4. Draw ------------------------------------------------------------
     const ctx = this.ctx;
@@ -349,11 +504,13 @@ export class LabelLayer {
     ctx.shadowColor = HALO;
     ctx.shadowBlur = 2.5;
 
-    // Clip to the globe silhouette (+4px so surface dots on the limb survive):
-    // labels can fade at the horizon but never float visibly past the Earth.
+    // Clip to the exact globe silhouette (+4px so surface dots on the limb
+    // survive): labels can fade at the horizon but never float past Earth.
     ctx.save();
     ctx.beginPath();
-    ctx.arc(disc.cx, disc.cy, disc.r + 4, 0, Math.PI * 2);
+    ctx.moveTo(disc.px[0], disc.py[0]);
+    for (let i = 1; i < disc.px.length; i++) ctx.lineTo(disc.px[i], disc.py[i]);
+    ctx.closePath();
     ctx.clip();
 
     for (const c of placed) {
@@ -362,7 +519,7 @@ export class LabelLayer {
       ctx.font = FONT[c.entry.kind];
       const info = c as unknown as { ox: number; oy: number; off: number };
       if (c.entry.kind === 2) {
-        // city: dot marker + text (right / left / below per placement choice)
+        // city: dot marker + text (right / left / below / above per placement)
         ctx.beginPath();
         ctx.arc(c.sx, c.sy, CITY_DOT_R, 0, Math.PI * 2);
         ctx.fill();
@@ -382,18 +539,63 @@ export class LabelLayer {
   }
 
   /**
-   * The earth's screen-space silhouette: center = projection of the origin,
-   * radius = (earth radius) in pixels at this camera distance. Earth radius is
-   * 1 scene unit and the camera always looks at the origin (OrbitControls),
-   * so this is exact.
+   * EXACT projected silhouette of the unit sphere for a perspective camera
+   * at any distance/orientation: the tangent cone's base circle — center
+   * C·(R²/d²), radius R·√(1−R²/d²), perpendicular to C — sampled in 3D and
+   * projected per point. (The distance-only approximation underestimates the
+   * silhouette by ~1.8× at the closest camera distance — the sampled circle
+   * is exact.)
    */
-  private globeDisc(camera: THREE.PerspectiveCamera): { cx: number; cy: number; r: number } {
-    TMP.world.set(0, 0, 0).project(camera);
-    const cx = (TMP.world.x * 0.5 + 0.5) * this.cssW;
-    const cy = (0.5 - TMP.world.y * 0.5) * this.cssH;
-    const dist = camera.position.length();
-    const r = this.cssH / 2 / (dist * Math.tan((camera.fov * Math.PI) / 360));
-    return { cx, cy, r };
+  private globeSilhouette(camera: THREE.PerspectiveCamera): {
+    px: number[];
+    py: number[];
+    cx: number;
+    cy: number;
+    rMax: number;
+  } {
+    const C = camera.position;
+    const d = C.length();
+    const R = 1;
+    const h = (R * R) / d; // distance from origin to the silhouette plane along C
+    const r0 = R * Math.sqrt(1 - (R / d) ** 2); // silhouette circle radius
+    TMP.axis.copy(C).normalize();
+    TMP.u.set(0, 1, 0);
+    if (Math.abs(TMP.axis.y) > 0.95) TMP.u.set(1, 0, 0);
+    TMP.u.crossVectors(TMP.axis, TMP.u).normalize();
+    TMP.v.crossVectors(TMP.axis, TMP.u).normalize();
+    TMP.center.copy(TMP.axis).multiplyScalar(h);
+
+    const px: number[] = [];
+    const py: number[] = [];
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let i = 0; i < DISC_SAMPLES; i++) {
+      const t = (i / DISC_SAMPLES) * Math.PI * 2;
+      const cosT = Math.cos(t) * r0;
+      const sinT = Math.sin(t) * r0;
+      TMP.point
+        .copy(TMP.center)
+        .addScaledVector(TMP.u, cosT)
+        .addScaledVector(TMP.v, sinT);
+      const ndc = TMP.point.project(camera);
+      const x = (ndc.x * 0.5 + 0.5) * this.cssW;
+      const y = (0.5 - ndc.y * 0.5) * this.cssH;
+      px.push(x);
+      py.push(y);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    let rMax = 0;
+    for (let i = 0; i < px.length; i++) {
+      const dx = px[i] - cx;
+      const dy = py[i] - cy;
+      const d2 = dx * dx + dy * dy;
+      if (d2 > rMax) rMax = d2;
+    }
+    return { px, py, cx, cy, rMax: Math.sqrt(rMax) };
   }
 
   /** Clear the canvas and mark the layer hidden (master toggle OFF). */
@@ -424,6 +626,21 @@ export class LabelLayer {
     return this.lastCandidateNames;
   }
 
+  /** Last silhouette bounding circle (tests/debug). */
+  get disc(): { cx: number; cy: number; rMax: number } {
+    return this.lastDisc;
+  }
+
+  /** Candidates rejected at placement (tests/debug). */
+  get rejected(): string[] {
+    return this.rejectedSample;
+  }
+
+  /** Placed label rects (tests/debug). */
+  get placedRects(): Array<{ n: string; r: [number, number, number, number] }> {
+    return this.lastPlacedRects;
+  }
+
   private textWidth(e: LabelEntry): number {
     const key = `${e.kind}:${e.name}`;
     const cached = this.widthCache.get(key);
@@ -440,25 +657,28 @@ function labelTierActive(e: LabelEntry, camDist: number): boolean {
     for (let i = 0; i < COUNTRY_RANK_TIERS.length; i++) {
       const tier = COUNTRY_RANK_TIERS[i];
       if (e.tier <= tier.rank) {
-        // the first (most important) tier is visible at ALL distances
         return i === 0 || camDist < tier.minDist;
       }
     }
     return false;
   }
+  if (e.kind === 3) {
+    // admin-1 short codes — country-scale band only
+    return camDist < SHORT_ACTIVE_MAX && camDist > SHORT_ACTIVE_MIN;
+  }
   if (e.kind === 1) {
     for (let i = 0; i < ADMIN1_RANK_MIN_DIST.length; i++) {
-      const maxRank = [2, 5, 7, 99][i];
-      if (e.tier <= maxRank) return camDist < ADMIN1_RANK_MIN_DIST[i];
+      if (e.tier <= ADMIN1_MAX_RANK[i]) return camDist < ADMIN1_RANK_MIN_DIST[i];
     }
     return false;
   }
-  return camDist < CITY_TIER_MIN_DIST[Math.min(e.tier, 3)];
+  return camDist < CITY_TIER_MIN_DIST[Math.min(e.tier, CITY_TIER_MIN_DIST.length - 1)];
 }
 
 function labelKindAlpha(kind: LabelKind, camDist: number): number {
   if (kind === 0) return countryLabelAlpha(camDist);
   if (kind === 1) return admin1LabelAlpha(camDist);
+  if (kind === 3) return admin1ShortAlpha(camDist);
   return cityLabelAlpha(camDist);
 }
 

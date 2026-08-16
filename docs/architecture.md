@@ -44,35 +44,60 @@ scene.add(geoContext.group);
 geoContext.update(camera, scene.rotation.y); // per-frame, dirty-checked
 ```
 
-- **Data** (`public/data/geo-context.json`, ~640 KB, gzipped ~200 KB) is built
+- **Data** (`public/data/geo-context.json`, ~1.4 MB, gzipped ~380 KB) is built
   offline from **Natural Earth v5.1.2** (public domain) by
   `scripts/build-geo-data.mjs` (`npm run build:geo`) — 50m countries +
-  boundary lines, 50m/10m admin-1 for 51 countries, 50m populated places
-  (1,251 cities). Admin-1 boundaries are DERIVED from polygon adjacencies
+  boundary lines, 50m/10m admin-1 for 51 countries (with postal/ISO-derived
+  short codes, e.g. `CA`, `BY`), **10m populated places (7,342 cities,
+  tiered 0–4)**. Admin-1 boundaries are DERIVED from polygon adjacencies
   (a ring edge shared by 2+ units of the same country is internal — coasts
-  and country borders are dropped), which is what keeps the file small.
-  Regenerate only when Natural Earth updates; runtime loads the bundled file
-  once (`data.ts`) — no polling.
+  and country borders are dropped), which is what keeps the file small
+  (~1.4 MB raw / ~380 KB gzipped). Regenerate only when Natural Earth
+  updates; runtime loads the bundled file once (`data.ts`) — no polling.
 - **Rendering**: country and admin-1 borders are ONE `LineSegments` batch +
   ONE shared material each (radius offsets 1.0015 / 1.0022 above the surface
   → no z-fighting; depth-tested → far side occluded). Labels render on a
   single 2D canvas between the WebGL canvas and the HUD panels
   (pointer-events none): stable screen-space size, no DOM churn, no framework.
   Label layout is dirty-checked on camera position/rotation/distance and
-  costs ~1 ms worst case; idle frames cost nothing.
+  costs ~1.5 ms worst case (7.3k city entries, screen-grid-indexed collision);
+  idle frames cost nothing.
 - **LOD** (`lod.ts`, thresholds in earth radii, tuned against the 3.0–3.8
-  global→detail blend): d ≥ 3.55 = major country names (NE LABELRANK ≤ 2,
-  always on) + faint country borders; 3.55→2.55 = stronger borders, more
-  country names, major cities; 2.55→1.8 = admin-1 borders + labels fade in,
-  more cities; d < 1.8 = full hierarchy. All gates ramp smoothly — nothing
-  pops.
-- **Occlusion**: labels pass a forward-hemisphere test, must project inside
-  the globe's screen disc, fade near the limb, and the canvas is clipped to
-  the disc — labels never leak past the Earth silhouette.
-- **Decluttering**: greedy placement in priority order
-  (countries → national capitals → admin-1 → other cities) with exact
-  AABB collision; city labels retry right/left/below/above the dot;
-  density caps per kind per zoom band.
+  global→detail blend) — SEMANTIC zoom, not additive accumulation:
+  - d ≥ 3.55 (GLOBAL): major country names (LABELRANK ≤ 2) + faint borders only.
+  - 3.55 → 2.8 (COUNTRY): more country names, **admin-1 short codes**
+    (postal/ISO-derived: CA, TX, ON, BY …) fade in; country labels begin
+    fading; no cities yet.
+  - 2.8 → 2.15 (REGIONAL): full admin-1 names + borders, national capitals +
+    admin-1 capitals + top-tier cities (tier 0/1); countries subordinate
+    (alpha → 0 by ~2.2).
+  - 2.15 → 1.65 (DETAILED): admin-1 names + tier-2 cities, density rises.
+  - < 1.65 (LOCAL): tiers 3–4 (small towns) join; country labels gone.
+  All gates ramp smoothly — nothing pops. Placement priority is PER BAND
+  (countries win globally; capitals beat admin-1 regionally; local cities
+  win locally) — a giant country label can never block local city names.
+- **Occlusion**: EXACT visibility math, three layers: (1) horizon test —
+  a surface anchor is visible only if `dotN > 1/d` (the tangent-cone limb;
+  points beyond it are occluded by the globe even though they project inside
+  the silhouette); (2) the screen silhouette is the projected tangent circle
+  (exact, sampled in 3D — correct at every distance, incl. the old
+  distance-approximation's underestimate near the surface); (3) the canvas
+  is clipped to that silhouette polygon. Labels fade as they approach the
+  horizon. Verified: 0 label pixels outside the analytic silhouette circle
+  at d = 4.2 / 3.0 / 2.0 / 1.55 / 1.2.
+- **Decluttering**: greedy placement with a screen-grid-indexed exact-AABB
+  collision (label-label overlaps ≤ 48 px² are tolerated — padded-corner
+  clips don't cull); city labels retry right/left/below/above the dot,
+  admin-1 labels retry ±14 px vertically; density caps per kind per band.
+- **Tactical obstacle avoidance**: high-salience tactical markers (cable
+  landing stations, launch pads, nuclear plants, DSN sites, the selected
+  target's reticle) reserve screen rectangles computed in `main.ts`
+  (`computeTacticalObstacles`, scaled by the marker's real on-screen size;
+  markers < 10 px reserve nothing). The label layer consumes generic rects —
+  no tactical-domain knowledge. Severity by size: ≤ 18 px markers block only
+  text under their center; > 18 px must cover ≥ 30 % of the label's TEXT
+  rect (obstacles test the text rect, not the city dot — a station at a
+  city's own anchor must not kill its label).
 - **Projection**: `src/geo/projection.ts` (`geoToScene`) is THE lat/lon →
   scene convention (ECEF → X→X, Z→Y, Y→−Z) — now shared by the flight engine
   and the geo context. `scripts/verify-geo.mjs` (`npm run verify:geo`) pins
@@ -81,7 +106,10 @@ geoContext.update(camera, scene.rotation.y); // per-frame, dirty-checked
   Cape Town) offline.
 - **UI**: Layers tab → "Geographic Context (Borders & Labels)" master toggle
   (default ON; OFF hides borders + labels, ON resumes automatic LOD). The
-  DATA FEEDS strip adds a Geography chip (STATIC · Natural Earth 50m).
+  DATA FEEDS strip adds a Geography chip (STATIC · Natural Earth).
+  `window.__earthDebug` (browser-harness handle) exists ONLY in dev builds
+  (`import.meta.env.DEV` gate; the production bundle contains zero
+  references).
 
 ## The domain registry pattern (add a domain = one adapter)
 
@@ -172,7 +200,7 @@ All crons run on GitHub's servers — Igor's PC can be off. Manual run: `gh work
 1. `npm run build` (tsc + vite clean).
 2. `npm run verify:geo` (data invariants, city/country placement, projection convention) and `npm run verify:clouds`.
 3. `npm run dev` → verify in browser: `#sat-load-status` = "Catalog Loaded: N", feed chips show expected statuses, ticker shows tagged events, search → select → telemetry panel + reticle.
-4. Geographic context: `Geography` chip = STATIC Natural Earth; at global view major country names + faint borders (no cities/admin-1); one zoom in → cities; deeper → state/province borders + labels; labels never leak past the globe silhouette; `Geographic Context` toggle OFF clears borders + labels.
+4. Geographic context: `Geography` chip = STATIC Natural Earth; global view = major country names + faint borders only (no cities, no admin-1); zoom in → admin-1 short codes (CA/TX/ON…) → full state names + capitals + borders → rich local city set; labels never leak past the globe silhouette (exact horizon + projected tangent circle); tactical marker rects stay clear of label text; `Geographic Context` toggle OFF clears borders + labels.
 5. Cables: search a station (e.g. "virginia beach") → panel shows real connected cables.
 6. Clouds: `Clouds` chip shows `LIVE — NASA GIBS · SNPP[+NOAA-20] · <date> · DAY+NIGHT`; toggle OFF removes only the cloud layer (stylized Earth unchanged); no console warning about fallback. Zoom check: at global distance (≥3.8 R, up to maxDistance 4.2) clouds are fully visible over the real day/night terminator; one zoom inward (≤3.0 R) and clouds are gone with the night side lifted to full daylight (thresholds: `DETAIL_BLEND_NEAR=3.0`, `DETAIL_BLEND_FAR=3.8` earth radii — narrow band, no pop).
 7. Push to `main` → `gh run watch` the deploy → verify live bundle hash changed + `data/cables.json` serves 200.

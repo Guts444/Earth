@@ -41,10 +41,12 @@ import { TacticalGrids } from './scene/grids';
 import { SelectionOverlays } from './scene/overlays';
 import { SatelliteCloud } from './scene/satellites';
 import { TargetLockController } from './scene/targetLock';
-import { GeographicContextScene } from './geo/context/geographicScene';
+import { GeographicContextScene, type ScreenRect } from './geo/context/geographicScene';
 import type { PickHit } from './domains/pick';
 import { fetchLiveCyclones, setLiveCyclones } from './geo/cyclones';
 import { loadCableData } from './infra/cables';
+import { NUCLEAR_PLANTS } from './infra/nuclear';
+import { DSN_COMPLEXES } from './space/dsn';
 import {
   applyUpcomingLaunches,
   fetchUpcomingLaunches,
@@ -167,18 +169,90 @@ gpsJamScene.setVisible(true);
 const geoContext = new GeographicContextScene(document.body);
 scene.add(geoContext.group);
 
+// ---------------------------------------------------------------------------
+// Tactical obstacle rectangles for geographic label placement
+//
+// High-salience tactical markers (cable landing stations, launch pads,
+// nuclear plants, DSN sites, and the selected-target reticle) reserve their
+// screen rectangles so cartographic text never sits inside/under them.
+// Only large markers — every satellite/flight dot is NOT an obstacle.
+// Rebuilt lazily on camera/rotation change (matches the label dirty check).
+// ---------------------------------------------------------------------------
+
+const obstacleTmp = new THREE.Vector3();
+const obstacleRotM = new THREE.Matrix4();
+let obstacleCacheKey = '';
+let obstacleCache: ScreenRect[] = [];
+let obstaclesDisabled = false; // DEV-only A/B toggle
+
+function computeTacticalObstacles(camera: THREE.PerspectiveCamera, rotY: number): ScreenRect[] {
+  if (obstaclesDisabled) return [];
+  const key = `${camera.position.x.toFixed(3)}|${camera.position.y.toFixed(3)}|${camera.position.z.toFixed(3)}|${rotY.toFixed(4)}`;
+  if (key === obstacleCacheKey) return obstacleCache;
+  obstacleCacheKey = key;
+  const rects: ScreenRect[] = [];
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  camera.updateMatrixWorld();
+  obstacleRotM.makeRotationY(rotY);
+  // screen-px per scene-unit at the point's distance (sizeAttenuation math)
+  const pxPerUnit = (h / 2) / Math.tan((camera.fov * Math.PI) / 360);
+  // Markers smaller than this on screen don't reserve label space at all —
+  // a 7px cable-station dot at global view must not block a country name.
+  const MIN_MARKER_PX = 10;
+
+  const push = (x: number, y: number, z: number, sizeUnits: number, capPx: number): void => {
+    obstacleTmp.set(x, y, z).applyMatrix4(obstacleRotM);
+    const dist = Math.max(camera.position.distanceTo(obstacleTmp), 0.2);
+    const markerPx = Math.min((sizeUnits * pxPerUnit) / dist, capPx);
+    if (markerPx < MIN_MARKER_PX) return;
+    const rPx = markerPx / 2 + 4;
+    const ndc = obstacleTmp.project(camera);
+    if (ndc.z > 1 || ndc.z < -1) return;
+    const cx = (ndc.x * 0.5 + 0.5) * w;
+    const cy = (0.5 - ndc.y * 0.5) * h;
+    if (cx < -rPx || cx > w + rPx || cy < -rPx || cy > h + rPx) return;
+    rects.push([cx - rPx, cy - rPx, cx + rPx, cy + rPx]);
+  };
+
+  for (const st of cablesScene.stations) push(st.x, st.y, st.z, 0.02, 44);
+  for (const sp of launchesScene.list) push(sp.x, sp.y, sp.z, 0.026, 44);
+  for (const p of NUCLEAR_PLANTS) push(p.x, p.y, p.z, 1.2, 14); // shader clamps at 14px
+  for (const d of DSN_COMPLEXES) push(d.x, d.y, d.z, 0.028, 44);
+
+  // Selected-target reticle (DOM overlay) — reserve its box when active.
+  if (currentSelectedTarget) {
+    const r = reticleEl.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) {
+      rects.push([r.left - 8, r.top - 8, r.right + 8, r.bottom + 8]);
+    }
+  }
+  obstacleCache = rects;
+  return rects;
+}
+
 // Minimal debug handle for the browser-verification harness (state inspection
 // only — camera, scene, geo context). No credentials, no mutation APIs.
-(window as unknown as Record<string, unknown>).__earthDebug = {
-  scene,
-  camera,
-  geoContext,
-  get earth() { return earthSystem; },
-  /** Fly the camera to a lat/lon (verification harness only). */
-  get flyTo() {
-    return (lat: number, lon: number, alt: number) => targetLock.flyToCoord(lat, lon, alt, 1.2);
-  },
-};
+// DEV-only: the production bundle never exposes it.
+if (import.meta.env.DEV) {
+  (window as unknown as Record<string, unknown>).__earthDebug = {
+    scene,
+    camera,
+    geoContext,
+    get earth() { return earthSystem; },
+    get obstacles() { return obstacleCache; },
+    /** DEV-only A/B toggle for the tactical obstacle rectangles. */
+    set disableObstacles(v: boolean) {
+      obstaclesDisabled = v;
+      obstacleCacheKey = '';
+    },
+    get disableObstacles() { return obstaclesDisabled; },
+    /** Fly the camera to a lat/lon (verification harness only). */
+    get flyTo() {
+      return (lat: number, lon: number, alt: number) => targetLock.flyToCoord(lat, lon, alt, 1.2);
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Domain Registry — selection, picking, search, toggles, animation ticks
@@ -776,8 +850,9 @@ function animate(now: number): void {
   controls.update();
 
   // Geographic context LOD (border opacities + label layout/decluttering).
-  // scene.rotation.y carries the auto-rotate drift for this frame.
-  geoContext.update(camera, scene.rotation.y);
+  // scene.rotation.y carries the auto-rotate drift for this frame; tactical
+  // obstacle rectangles keep labels clear of high-salience markers.
+  geoContext.update(camera, scene.rotation.y, computeTacticalObstacles(camera, scene.rotation.y));
 
   // Automatic global -> detail blend from camera distance (clouds fade out,
   // night side lifts to full daylight as the camera approaches the surface).

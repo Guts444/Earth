@@ -61,6 +61,8 @@ export interface Admin1Label {
   x: number;
   /** Latitude (degrees). */
   y: number;
+  /** Short code for the country-scale band (postal/ISO-derived), or null. */
+  s: string | null;
 }
 
 export interface Admin1Line {
@@ -82,7 +84,7 @@ export interface CityLabel {
   /** Latitude (degrees). */
   y: number;
   pop: number;
-  /** LOD tier 0 (capitals/megacities) … 3 (smaller centers). */
+  /** LOD tier 0 (capitals/world cities) … 4 (small towns, local zoom only). */
   t: number;
   /** Collision priority (higher = more important). */
   pr: number;
@@ -119,8 +121,8 @@ export function validateGeoData(data: GeoContextData): string[] {
   if (!Array.isArray(data.countryLines) || data.countryLines.length < 100) {
     errors.push(`countryLines: expected ≥100, got ${data.countryLines?.length}`);
   }
-  if (!Array.isArray(data.cities) || data.cities.length < 500) {
-    errors.push(`cities: expected ≥500, got ${data.cities?.length}`);
+  if (!Array.isArray(data.cities) || data.cities.length < 5000) {
+    errors.push(`cities: expected ≥5000, got ${data.cities?.length}`);
   }
   if (!Array.isArray(data.admin1) || data.admin1.length < 200) {
     errors.push(`admin1 labels: expected ≥200, got ${data.admin1?.length}`);

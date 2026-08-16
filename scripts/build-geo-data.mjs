@@ -62,7 +62,7 @@ const FILES = {
   admin1_50: 'ne_50m_admin_1_states_provinces.geojson',
   admin1Lines_50: 'ne_50m_admin_1_states_provinces_lines.geojson', // validation only
   admin1_10: 'ne_10m_admin_1_states_provinces.geojson',
-  places: 'ne_50m_populated_places.geojson',
+  places: 'ne_10m_populated_places.geojson', // 7,342 places — rich local hierarchy
 };
 
 /**
@@ -448,10 +448,27 @@ function collectUnits(dataset, filter) {
       lon: round6(p.longitude),
       lat: round6(p.latitude),
       region: p.region ?? '',
+      postal: p.postal ?? '',
+      iso: p.iso_3166_2 ?? '',
       rings: geomRings(f.geometry),
     });
   }
   return byCc;
+}
+
+/**
+ * Compact admin-1 short label for the country-scale LOD band: the postal
+ * code when Natural Earth carries one (US: CA/TX/FL, CA: ON/BC, AU: WA/NSW…),
+ * else the ISO 3166-2 suffix (DE-BY → BY, IN-UP → UP), else null (no
+ * abbreviated phase for that unit — the full name takes over at regional).
+ */
+function shortLabel(postal, iso) {
+  const p = String(postal ?? '').trim().toUpperCase();
+  if (p.length >= 2 && p.length <= 4) return p;
+  const isoCode = String(iso ?? '').trim().toUpperCase();
+  const m = /^[A-Z]{2}[-:]?([A-Z0-9]{2,3})$/.exec(isoCode);
+  if (m && m[1].length >= 2) return m[1];
+  return null;
 }
 
 const admin1_50_by_cc = collectUnits(admin1_50, () => true);
@@ -564,7 +581,16 @@ for (const [cc, units] of [...admin1_50_by_cc, ...admin1_10_by_cc]) {
 
   for (const u of agg) {
     if (Number.isFinite(u.lon) && Number.isFinite(u.lat)) {
-      admin1.push({ cc, c: u.code, n: u.name, r: u.rank, x: u.lon, y: u.lat });
+      admin1.push({
+        cc,
+        c: u.code,
+        n: u.name,
+        r: u.rank,
+        x: u.lon,
+        y: u.lat,
+        // aggregated units (FR régions etc.) carry no postal/iso — no short phase
+        s: shortLabel(u.postal, u.iso),
+      });
     }
   }
 }
@@ -617,17 +643,18 @@ for (const f of places.features) {
 
   const cap0 = p.ADM0CAP === 1;
   const cap1 = !cap0 && String(p.FEATURECLA ?? '').toLowerCase().includes('capital');
-  const lr = Number.isFinite(p.LABELRANK) && p.LABELRANK >= 1 && p.LABELRANK <= 8 ? p.LABELRANK : null;
-  const effRank = lr ?? (Number.isFinite(p.SCALERANK) ? p.SCALERANK : 5);
+  // 10m LABELRANK is degenerate (1 for most places) — tier on SCALERANK + roles + population.
+  const sr = Number.isFinite(p.SCALERANK) ? p.SCALERANK : 10;
   const pop = p.POP_MAX ?? 0;
-  let tier = 3;
-  if (cap0 || p.MEGACITY === 1 || (p.WORLDCITY === 1 && pop >= 500_000)) tier = 0;
-  else if (cap1 || effRank <= 2 || pop >= 1_000_000) tier = 1;
-  else if (effRank <= 5 || pop >= 500_000) tier = 2;
+  let tier = 4;
+  if (cap0 || p.WORLDCITY === 1 || pop >= 3_000_000) tier = 0;
+  else if (cap1 || pop >= 1_000_000 || sr <= 3) tier = 1;
+  else if (pop >= 500_000 || sr <= 4) tier = 2;
+  else if (pop >= 100_000 || sr <= 6) tier = 3;
   const pri =
-    (4 - tier) * 10_000_000 +
+    (5 - tier) * 10_000_000 +
     (cap0 ? 2_000_000 : cap1 ? 1_000_000 : 0) +
-    (10 - Math.min(effRank, 10)) * 10_000 +
+    (10 - Math.min(sr, 10)) * 10_000 +
     Math.min(Math.floor(pop / 10_000), 9_999);
 
   cities.push({

@@ -61,15 +61,19 @@ Natural Earth **v5.1.2** GeoJSON (`nvkelso/natural-earth-vector`):
   France/Italy/Spain/Philippines are digitized at admin-2 in NE, so units
   are aggregated to the `region` field (régions/regioni/comunidades/regions);
   UK districts are mapped to England/Scotland/Wales/Northern Ireland.
-- `ne_50m_populated_places` — 1,251 cities with name, country, admin-1,
-  population, and capital flags, tiered 0–3 (capitals/megacities → smaller
-  centers) for the LOD system.
+  Each unit also carries a **short code** (`s` field) — NE `postal` when
+  present (US `CA`/`TX`, AU `NSW`/`QLD`, BR `SP`…), else the ISO 3166-2
+  suffix (DE `BY`, IN `UP`) — used for the country-scale abbreviated band.
+- `ne_10m_populated_places` — 7,342 cities with name, country, admin-1,
+  population, capital flags, and NE scalerank, tiered 0–4 (national
+  capitals/world cities → admin-1 capitals + ≥1M → ≥500k → ≥100k →
+  small towns) for the LOD system.
 
 Pipeline: download (cached in `.geo-cache/`, git-ignored) → simplify
 (Douglas–Peucker) → snap/quantize to integer coordinate grids → verify
 (every city checked against its country polygon; dateline-crossing segments
-rejected) → emit `public/data/geo-context.json` (~640 KB) plus
-`scripts/data/geo-verify-countries.json` (coarse polygons for
+rejected) → emit `public/data/geo-context.json` (~1.4 MB, ~380 KB gzipped)
+plus `scripts/data/geo-verify-countries.json` (coarse polygons for
 `npm run verify:geo`, which re-checks city placement and the projection
 convention offline).
 

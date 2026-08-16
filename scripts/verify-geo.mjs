@@ -182,6 +182,11 @@ const NO_POLY_EXCEPTIONS = new Set([
   'Grand Turk', // Turks & Caicos — not in 50m admin-0
   'Gibraltar', // not in 50m admin-0
   'Longyearbyen', // Svalbard — not in 50m admin-0
+  'San Andrés', // Colombian island — 50m polygon omits it
+  'Kavaratti', // Lakshadweep (India) — 50m polygon omits the atoll
+  'Melilla', // Spanish enclave — 50m polygon sliver
+  'Magong', // Penghu (Taiwan) — 50m polygon omits the archipelago
+  'Raoul Island Station', // Kermadec Islands — not in 50m admin-0
 ]);
 let inside = 0, nearEdge = 0, outside = 0, skipped = 0;
 const outsideNames = [];
@@ -248,6 +253,14 @@ for (const c of data.countries) {
 }
 if (offSphere) fail(`${offSphere} country anchors off the unit sphere`);
 else ok('all country label anchors on the unit sphere');
+
+// ---- admin-1 short labels ---------------------------------------------------
+let shortBad = 0;
+for (const a of data.admin1) {
+  if (a.s !== null && (typeof a.s !== 'string' || a.s.length < 2 || a.s.length > 4)) shortBad++;
+}
+if (shortBad) fail(`${shortBad} malformed admin-1 short labels`);
+else ok(`admin-1 short labels: ${data.admin1.filter((a) => a.s).length} valid (2–4 chars)`);
 
 // ---- summary ----------------------------------------------------------------
 console.log('');

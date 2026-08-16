@@ -17,12 +17,18 @@
 import * as THREE from 'three';
 import { BoundaryLayers } from './boundaries';
 import { loadGeoContextData, validateGeoData, type GeoContextData } from './data';
-import { LabelLayer } from './labels';
+import { LabelLayer, type ScreenRect } from './labels';
+
+export type { ScreenRect };
 
 export interface GeographicContext {
   group: THREE.Group;
   /** Per-frame update: boundary opacities + label layout (dirty-checked). */
-  update(camera: THREE.PerspectiveCamera, sceneRotY: number): void;
+  update(
+    camera: THREE.PerspectiveCamera,
+    sceneRotY: number,
+    obstacles?: ReadonlyArray<ScreenRect>,
+  ): void;
   /** Master toggle — OFF hides borders and labels; ON resumes automatic LOD. */
   setVisible(v: boolean): void;
 }
@@ -59,11 +65,15 @@ export class GeographicContextScene implements GeographicContext {
       });
   }
 
-  update(camera: THREE.PerspectiveCamera, sceneRotY: number): void {
+  update(
+    camera: THREE.PerspectiveCamera,
+    sceneRotY: number,
+    obstacles: ReadonlyArray<ScreenRect> = [],
+  ): void {
     if (!this.wantVisible || !this.boundaries) return;
     const camDist = camera.position.length();
     this.boundaries.update(camDist);
-    this.labels.update(camera, sceneRotY, this.wantVisible);
+    this.labels.update(camera, sceneRotY, this.wantVisible, obstacles);
   }
 
   setVisible(v: boolean): void {
@@ -100,5 +110,20 @@ export class GeographicContextScene implements GeographicContext {
   /** Per-kind label pipeline counters (verification harness). */
   get labelDebug(): { entries: number[]; candidates: number[]; placed: number[] } {
     return this.labels.debugCounts;
+  }
+
+  /** Last silhouette bounding circle (verification harness). */
+  get lastDisc(): { cx: number; cy: number; rMax: number } {
+    return this.labels.disc;
+  }
+
+  /** Candidates rejected at placement (verification harness). */
+  get rejected(): string[] {
+    return this.labels.rejected;
+  }
+
+  /** Placed label rects (verification harness). */
+  get placedRects(): Array<{ n: string; r: [number, number, number, number] }> {
+    return this.labels.placedRects;
   }
 }
