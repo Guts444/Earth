@@ -20,6 +20,10 @@ test-browser.js
 /screenshot_test.png
 .geo-cache/
 
+# Local review / operator notes — do not publish
+REVIEW-FINDINGS.md
+*.local.md
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
